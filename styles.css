@@ -324,6 +324,17 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .badge.private { display: inline-flex; align-items: center; gap: 4px; }
 .shell.guest .tabbar { display: none; }
 
+/* Team: neu, zuständig, Projekt teilen, Verlauf */
+.badge.new { background: #ea4335; color: #fff; font-weight: 600; }
+.badge.assignee { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); }
+.project-share { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.project-share .muted { display: inline-flex; align-items: center; gap: 5px; }
+.project-share .ico { width: 14px; height: 14px; }
+.board-head .project-share { margin-left: auto; }
+.history .hist-row { padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
+.history .hist-row:last-child { border-bottom: 0; }
+.mini-card .badges { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+
 /* Kalender: Wochenansicht wie Google Kalender */
 .cal-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .cal-toolbar .icon-btn { width: 34px; height: 34px; border-radius: 50%; }

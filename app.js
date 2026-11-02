@@ -439,7 +439,7 @@ function Main({ session }) {
   const load = useCallback(async () => {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
-        card_shares, role, users] = await Promise.all([
+        card_shares, role, users, project_shares, card_events, card_seen] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -448,15 +448,19 @@ function Main({ session }) {
         db.list('card_shares').catch(() => []),
         db.rpc('my_role').catch(() => 'owner'),
         db.rpc('crm_users').catch(() => []),
+        db.list('project_shares').catch(() => []),
+        db.list('card_events').catch(() => []),
+        db.list('card_seen').catch(() => []),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
       // Ein Gast bekommt von der Datenbank ohnehin nur geteilte Karten, das hier gilt für die Demo
       const me = (session?.user?.email || '').toLowerCase();
       const mine = new Set(card_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.card_id));
-      const cards = role === 'gast' ? allCards.filter((c) => mine.has(c.id)) : allCards;
+      const myProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
+      const cards = role === 'gast' ? allCards.filter((c) => mine.has(c.id) || myProjects.has(c.project_id)) : allCards;
       setData({ projects, stages, organizations, persons, cards, meetings, meeting_persons, events, event_persons,
-        card_shares, role: role || 'owner', users: users || [] });
+        card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -472,6 +476,14 @@ function Main({ session }) {
   }, [load]);
 
   const actions = useMemo(() => {
+    const me = (session?.user?.email || '').toLowerCase();
+    // Verlauf einer Karte neu holen, die Einträge schreibt die Datenbank selbst
+    const reloadHistory = async (cardId) => {
+      try {
+        const rows = await db.list('card_events', { card_id: cardId });
+        setData((d) => ({ ...d, card_events: [...d.card_events.filter((x) => x.card_id !== cardId), ...rows] }));
+      } catch { /* Verlauf ist nicht kritisch */ }
+    };
     const put = (table, row) => setData((d) => {
       const list = d[table];
       const exists = list.some((x) => x.id === row.id);
@@ -487,6 +499,7 @@ function Main({ session }) {
         try {
           const saved = id ? await db.update(table, id, fields) : await db.insert(table, fields);
           put(table, saved);
+          if (table === 'cards') reloadHistory(saved.id);
           return saved;
         } catch (e) { fail(e); throw e; }
       },
@@ -494,7 +507,17 @@ function Main({ session }) {
       async patch(table, id, fields) {
         const now = new Date().toISOString();
         setData((d) => ({ ...d, [table]: d[table].map((x) => (x.id === id ? { ...x, ...fields, updated_at: now } : x)) }));
-        try { put(table, await db.update(table, id, fields)); } catch (e) { fail(e); load(); }
+        try {
+          put(table, await db.update(table, id, fields));
+          if (table === 'cards') reloadHistory(id);
+        } catch (e) { fail(e); load(); }
+      },
+      reloadHistory,
+      // Karte als gesehen markieren, damit „Neu“ verschwindet
+      async markSeen(cardId) {
+        const row = { card_id: cardId, email: me, seen_at: new Date().toISOString() };
+        setData((d) => ({ ...d, card_seen: [...d.card_seen.filter((x) => !(x.card_id === cardId && x.email.toLowerCase() === me)), row] }));
+        try { await db.upsert('card_seen', row, 'card_id,email'); } catch { /* nicht kritisch */ }
       },
       async remove(table, id) {
         try { await db.remove(table, id); await load(); } catch (e) { fail(e); throw e; }
@@ -510,6 +533,7 @@ function Main({ session }) {
       // rutschen Aufgabe und Kontakt trotzdem nach oben.
       touched({ card_id: cardId, person_id: personId }) {
         const now = new Date().toISOString();
+        if (cardId) reloadHistory(cardId);
         setData((d) => ({
           ...d,
           cards: d.cards.map((c) => (c.id === cardId ? { ...c, updated_at: now } : c)),
@@ -568,8 +592,30 @@ function Main({ session }) {
       sharesOf.get(x.card_id).push(x);
     });
     const userName = new Map(data.users.map((u) => [u.email.toLowerCase(), u.name]));
+    const projectSharesOf = new Map();
+    data.project_shares.forEach((x) => {
+      if (!projectSharesOf.has(x.project_id)) projectSharesOf.set(x.project_id, []);
+      projectSharesOf.get(x.project_id).push(x);
+    });
+    const historyOf = new Map();
+    [...data.card_events].sort((a, b) => ts(b.at) - ts(a.at) || b.id - a.id).forEach((e) => {
+      if (!historyOf.has(e.card_id)) historyOf.set(e.card_id, []);
+      historyOf.get(e.card_id).push(e);
+    });
+    const me = (session?.user?.email || '').toLowerCase();
+    const seenAt = new Map(data.card_seen.filter((x) => x.email.toLowerCase() === me).map((x) => [x.card_id, ts(x.seen_at)]));
+    // Neu: jemand anderes hat seit meinem letzten Öffnen etwas geändert
+    const isNew = (c) => (historyOf.get(c.id) || []).some((e) => e.actor && e.actor.toLowerCase() !== me
+      && (!seenAt.has(c.id) || ts(e.at) > seenAt.get(c.id)));
+    // Sieht ein Gast diese Karte? Direkt geteilt oder über ihr Projekt
+    const visibleFor = (c, email) => (sharesOf.get(c.id) || []).some((x) => x.email.toLowerCase() === email)
+      || (projectSharesOf.get(c.project_id) || []).some((x) => x.email.toLowerCase() === email);
     return {
       sharesOf,
+      projectSharesOf,
+      historyOf,
+      isNew,
+      visibleFor,
       userName,
       project: byId(data.projects),
       stage: byId(data.stages),
@@ -622,7 +668,8 @@ function Main({ session }) {
   if (isGuest) {
     // Gast: nur die geteilten Karten, Einstellungen und sonst nichts
     bg = ['geteilt'];
-    if (sec === 'karte' && a !== 'neu') overlay = html`<${CardSheet} key=${'c' + a} id=${a} query=${route.query} />`;
+    const newOk = a === 'neu' && (idx.projectSharesOf.get(Number(route.query.get('projekt'))) || []).length > 0;
+    if (sec === 'karte' && (a !== 'neu' || newOk)) overlay = html`<${CardSheet} key=${'c' + a} id=${a} query=${route.query} />`;
     if (sec === 'einstellungen') overlay = html`<${SettingsSheet} key="settings" onLogout=${logout} />`;
   } else if (sec === 'karte') {
     const c = idx.card.get(Number(a));
@@ -898,11 +945,31 @@ function ContactActions({ phones = [], emails = [], website }) {
 // ---------------------------------------------------------------------------
 // Übersicht: was zu tun ist, worauf ich warte, letzte Meetings
 // ---------------------------------------------------------------------------
+// Team: was andere seit meinem letzten Blick geändert haben, und was bei anderen liegt
+function TeamTile() {
+  const { cards, idx, me, users } = useApp();
+  if (users.length < 2) return null;
+  const open = cards.filter((c) => !c.archived);
+  const fresh = open.filter((c) => idx.isNew(c)).sort(byUpdatedDesc);
+  const elsewhere = open.filter((c) => c.assignee && c.assignee.toLowerCase() !== me
+    && stageKind(idx.stage.get(c.stage_id)) !== 'done').sort(byUpdatedDesc);
+  return html`<section class="tile">
+    <h2>Team</h2>
+    <h3 class="group-normal">Neu seit deinem letzten Blick <span class="count">${fresh.length}</span></h3>
+    ${fresh.slice(0, 8).map((c) => html`<${TodoRow} key=${'n' + c.id} card=${c} />`)}
+    ${fresh.length === 0 && html`<p class="muted small">Keine Änderungen von anderen.</p>`}
+    <h3 class="group-normal">Liegt bei anderen <span class="count">${elsewhere.length}</span></h3>
+    ${elsewhere.slice(0, 8).map((c) => html`<${TodoRow} key=${'a' + c.id} card=${c} waiting />`)}
+    ${elsewhere.length === 0 && html`<p class="muted small">Gerade liegt nichts bei anderen.</p>`}
+  </section>`;
+}
+
 function Overview() {
-  const { cards, meetings, idx } = useApp();
+  const { cards, meetings, idx, me } = useApp();
   const [showAll, setShowAll] = useState(false);
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
-  const open = cards.filter((c) => !c.archived);
+  // Was jemand anderem zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
+  const open = cards.filter((c) => !c.archived && (!c.assignee || c.assignee.toLowerCase() === me));
   const todo = open.filter((c) => kind(c) === 'todo' || kind(c) === 'doing');
   const waiting = open.filter((c) => kind(c) === 'waiting').sort((a, b) => ts(a.updated_at) - ts(b.updated_at));
 
@@ -943,6 +1010,7 @@ function Overview() {
         ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
       </section>
       <div class="tile-side">
+        <${TeamTile} />
         <${TodayEvents} />
         <section class="tile">
           <h2>Warte auf Rückmeldung <span class="count">${waiting.length}</span></h2>
@@ -1035,7 +1103,7 @@ function TodoRow({ card, waiting }) {
     <button class="check" type="button" onClick=${complete} aria-label="Als erledigt markieren" title="Erledigt"><${Icon} n="check" /></button>
     <div class="todo-main">
       <div class="todo-title">${card.title}</div>
-      <div class="todo-meta"><span class="dot"></span><span>${meta}</span><${CardBadges} card=${card} /></div>
+      <div class="todo-meta"><span class="dot"></span><span>${meta}</span><${CardBadges} card=${card} /><${TeamMarks} card=${card} /></div>
     </div>
   </div>`;
 }
@@ -1096,6 +1164,7 @@ function Board({ projectId }) {
     <button class="ptab add" onClick=${newProject} title="Projekt anlegen" aria-label="Projekt anlegen">+</button>
   </div>`;
   const search = html`<${SearchBox} value=${q} onInput=${setQ} placeholder="Aufgaben durchsuchen" />`;
+  const share = html`<${ProjectShare} project=${project} />`;
 
   const cardList = (s, list) => {
     const limit = s.is_done && !showAll[s.id] && !q ? 15 : Infinity;
@@ -1113,6 +1182,7 @@ function Board({ projectId }) {
     return html`<div class="board-page">
       ${projectTabs}
       ${search}
+      ${share}
       <div class="stage-tabs">
         ${cols.map((s) => html`<button key=${s.id} class=${'stab' + (s.id === active.id ? ' on' : '')} onClick=${() => setMobileStage(s.id)}>
           ${s.name}<span class="count">${byStage.get(s.id).length}</span></button>`)}
@@ -1123,7 +1193,7 @@ function Board({ projectId }) {
   }
 
   return html`<div class="board-page">
-    <div class="board-head">${projectTabs}${search}</div>
+    <div class="board-head">${projectTabs}${search}${share}</div>
     <div class="board" style=${`--cols:${cols.length}`}>
       ${cols.map((s) => html`<section key=${s.id} class=${'column' + (over === s.id ? ' over' : '')}
           onDragOver=${(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (over !== s.id) setOver(s.id); }}
@@ -1139,6 +1209,28 @@ function Board({ projectId }) {
   </div>`;
 }
 
+// Ganzes Projekt mit Gästen teilen: alle Deals darin, auch künftige
+function ProjectShare({ project }) {
+  const { users, project_shares, actions, isGuest } = useApp();
+  const guests = users.filter((u) => u.role === 'gast');
+  if (isGuest || !project || !guests.length) return null;
+  const rows = project_shares.filter((x) => x.project_id === project.id);
+  const on = (u) => rows.find((x) => x.email.toLowerCase() === u.email);
+  async function toggle(u) {
+    const row = on(u);
+    if (!row && !confirm(`Ganzes Projekt „${project.name}“ mit ${u.name} teilen? ${u.name} sieht dann alle Deals darin, auch neue, und kann dort selbst Deals anlegen.`)) return;
+    try {
+      if (row) await actions.drop('project_shares', row.id);
+      else await actions.save('project_shares', { project_id: project.id, email: u.email });
+    } catch { /* fail */ }
+  }
+  return html`<div class="project-share">
+    <span class="muted small"><${Icon} n="share" /> Projekt teilen</span>
+    ${guests.map((u) => html`<button key=${u.email} type="button" class=${'chip toggle share' + (on(u) ? ' on' : '')}
+      title=${on(u) ? 'Freigabe für das ganze Projekt aufheben' : 'Alle Deals dieses Projekts teilen'} onClick=${() => toggle(u)}>${u.name}</button>`)}
+  </div>`;
+}
+
 function CardBadges({ card }) {
   const due = dueInfo(card.due_date);
   const p = PRIO[card.priority];
@@ -1147,6 +1239,15 @@ function CardBadges({ card }) {
     ${p && html`<span class=${'prio prio-' + card.priority}>${p.label}</span>`}
     ${due && html`<span class=${'due ' + due.cls}>${due.label}</span>`}
   </span>`;
+}
+
+// Kleine Hinweise an Karten: neu seit dem letzten Öffnen, zuständig ist jemand anderes
+function TeamMarks({ card }) {
+  const { idx, me, users } = useApp();
+  if (users.length < 2) return null;
+  const other = card.assignee && card.assignee.toLowerCase() !== me ? idx.userName.get(card.assignee.toLowerCase()) || card.assignee : null;
+  return html`${idx.isNew(card) && html`<span class="badge new" title="Jemand anderes hat seit deinem letzten Öffnen etwas geändert">Neu</span>`}
+    ${other && html`<span class="badge assignee" title=${`Zuständig: ${other}`}>${other.split(' ')[0]}</span>`}`;
 }
 
 function CardItem({ card, dragging, onDragStart, onDragEnd }) {
@@ -1159,21 +1260,39 @@ function CardItem({ card, dragging, onDragStart, onDragEnd }) {
       onDragEnd=${onDragEnd}>
     <div class="card-title">${card.title}</div>
     ${meta && html`<div class="card-meta">${meta}</div>`}
-    <div class="card-foot"><${CardBadges} card=${card} />
-      ${(idx.sharesOf.get(card.id) || []).length > 0 && html`<span class="shared-mark" title="Geteilt"><${Icon} n="share" /></span>`}
+    <div class="card-foot"><${CardBadges} card=${card} /><${TeamMarks} card=${card} />
+      ${((idx.sharesOf.get(card.id) || []).length > 0 || (idx.projectSharesOf.get(card.project_id) || []).length > 0)
+        && html`<span class="shared-mark" title="Geteilt"><${Icon} n="share" /></span>`}
       <span>${relDate(card.updated_at)}</span></div>
   </a>`;
 }
 
+// Verlaufseintrag als Satz
+function historyText(e, idx) {
+  const d = e.detail;
+  switch (e.kind) {
+    case 'angelegt': return 'hat die Karte angelegt';
+    case 'spalte': return `hat sie nach „${d}“ verschoben`;
+    case 'dringlichkeit': return d ? `hat die Dringlichkeit auf „${PRIO[d]?.label || d}“ gesetzt` : 'hat die Dringlichkeit entfernt';
+    case 'faellig': return d ? `hat „fällig am ${new Date(d + 'T12:00').toLocaleDateString('de-DE')}“ gesetzt` : 'hat die Fälligkeit entfernt';
+    case 'zustaendig': return d ? `hat ${idx.userName.get(d.toLowerCase()) || d} zuständig gemacht` : 'hat die Zuständigkeit entfernt';
+    case 'titel': return `hat den Titel geändert: „${d}“`;
+    case 'projekt': return `hat sie ins Projekt „${d}“ verschoben`;
+    case 'archiv': return d === 'ja' ? 'hat sie archiviert' : 'hat sie wiederhergestellt';
+    case 'notiz': return 'hat eine Notiz geschrieben';
+    default: return e.kind;
+  }
+}
+
 function CardSheet({ id, query }) {
-  const { idx, projects, stages, persons, organizations, actions, isGuest, users } = useApp();
+  const { idx, projects, stages, persons, organizations, actions, isGuest, users, me, project_shares } = useApp();
   const isNew = id === 'neu';
   const card = isNew ? null : idx.card.get(Number(id));
   const firstStage = (pid) => stages.filter((s) => s.project_id === pid).sort(bySort)[0]?.id ?? null;
   const [form, setForm] = useState(() => {
     if (card) {
-      const { title, project_id, stage_id, person_id, org_id, priority, due_date } = card;
-      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null, due_date: due_date ?? null };
+      const { title, project_id, stage_id, person_id, org_id, priority, due_date, assignee } = card;
+      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null, due_date: due_date ?? null, assignee: assignee ?? null };
     }
     const pid = Number(query.get('projekt')) || Number(ls.get('crm-project')) || projects[0]?.id;
     const person = idx.person.get(Number(query.get('kontakt')));
@@ -1185,11 +1304,14 @@ function CardSheet({ id, query }) {
       org_id: Number(query.get('firma')) || person?.org_id || null,
       priority: null,
       due_date: null,
+      assignee: null,
     };
   });
   const [busy, setBusy] = useState(false);
   const titleRef = useRef(null);
   useEffect(() => { if (isNew) titleRef.current?.focus(); }, []);
+  // Öffnen zählt als gesehen, damit „Neu“ verschwindet
+  useEffect(() => { if (card) actions.markSeen(card.id); }, [card?.id]);
   const close = () => back(isGuest ? '#/geteilt' : card ? `#/board/${card.project_id}` : '#/board');
 
   if (!isNew && !card) {
@@ -1197,7 +1319,7 @@ function CardSheet({ id, query }) {
   }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date'];
+  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date', 'assignee'];
   const fromMeeting = card?.meeting_id ? idx.meeting.get(card.meeting_id) : null;
   const dirty = !card || fields.some((k) => (form[k] ?? null) !== (card[k] ?? null));
   const projStages = stages.filter((s) => s.project_id === form.project_id).sort(bySort);
@@ -1241,14 +1363,31 @@ function CardSheet({ id, query }) {
       else await actions.save('card_shares', { card_id: card.id, email: u.email });
     } catch { /* fail */ }
   }
-  const sharedNames = shares.map((x) => idx.userName.get(x.email.toLowerCase()) || x.email);
+  const viaProject = (u) => (idx.projectSharesOf.get(form.project_id) || []).some((x) => x.email.toLowerCase() === u.email);
+  const sharedNames = [...new Set([...shares.map((x) => x.email.toLowerCase()), ...guests.filter(viaProject).map((u) => u.email)])]
+    .map((e) => idx.userName.get(e) || e);
+  // Zuständig: wird sofort gespeichert. Bekommt ein Gast eine Karte, die er nicht sieht, wird sie mit ihm geteilt.
+  async function pickAssignee(email) {
+    set('assignee', email);
+    if (!card) return;
+    await actions.patch('cards', card.id, { assignee: email });
+    const u = users.find((x) => x.email === email);
+    if (!isGuest && u?.role === 'gast' && !idx.visibleFor(card, email)) {
+      try {
+        await actions.save('card_shares', { card_id: card.id, email });
+        actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
+      } catch { /* fail */ }
+    }
+  }
+  const history = card ? idx.historyOf.get(card.id) || [] : [];
+  const guestProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
   const person = idx.person.get(form.person_id);
   const org = idx.org.get(form.org_id);
 
   return html`<${Sheet} title=${isNew ? 'Neue Aufgabe' : 'Aufgabe'} onClose=${close}>
     <form class="form" onSubmit=${submit}>
       ${card?.archived && html`<div class="notice">Diese Aufgabe ist archiviert und erscheint nicht auf dem Board.</div>`}
-      ${isGuest ? html`<h2 class="ev-sheet-title">${form.title}</h2>
+      ${isGuest && !isNew ? html`<h2 class="ev-sheet-title">${form.title}</h2>
         <p class="meta">${idx.project.get(form.project_id)?.name}</p>` : html`
       <label class="field"><span>Titel</span>
         <textarea ref=${titleRef} rows="2" class="title-input" value=${form.title} placeholder="Was ist zu tun?"
@@ -1256,15 +1395,16 @@ function CardSheet({ id, query }) {
           onKeyDown=${(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); } }}></textarea></label>
       ${card && guests.length > 0 && html`<div class="field share-field"><span>Teilen</span>
         <div class="chips">${guests.map((u) => html`<button type="button" key=${u.email}
-          class=${'chip toggle share' + (shares.some((x) => x.email.toLowerCase() === u.email) ? ' on' : '')}
-          onClick=${() => toggleShare(u)}><${Icon} n="share" />${u.name}</button>`)}</div>
-        <p class="muted small">${shares.length
+          class=${'chip toggle share' + (shares.some((x) => x.email.toLowerCase() === u.email) || viaProject(u) ? ' on' : '')}
+          disabled=${viaProject(u)} title=${viaProject(u) ? 'Über das ganze Projekt geteilt' : ''}
+          onClick=${() => toggleShare(u)}><${Icon} n="share" />${u.name}${viaProject(u) ? ' (Projekt)' : ''}</button>`)}</div>
+        <p class="muted small">${sharedNames.length
     ? `${sharedNames.join(', ')} sieht diese Karte und ihre Notizen, außer denen mit Schloss. Mails, Meetings und andere Karten nicht.`
     : 'Nur du siehst diese Karte. Antippen, um sie zu teilen.'}</p>
       </div>`}
       <label class="field"><span>Projekt</span>
         <select value=${form.project_id} onChange=${(e) => changeProject(Number(e.target.value))}>
-          ${projects.map((p) => html`<option key=${p.id} value=${p.id}>${p.name}</option>`)}
+          ${projects.filter((p) => !isGuest || guestProjects.has(p.id)).map((p) => html`<option key=${p.id} value=${p.id}>${p.name}</option>`)}
         </select></label>`}
       <div class="field"><span>Spalte</span>
         <div class="seg wrap">${projStages.map((s) => html`<button type="button" key=${s.id}
@@ -1279,6 +1419,12 @@ function CardSheet({ id, query }) {
         <label class="field"><span>Fällig am</span>
           <input type="date" value=${form.due_date || ''} onInput=${(e) => set('due_date', e.target.value || null)} /></label>
       </div>
+      ${users.length > 1 && html`<div class="field"><span>Zuständig</span>
+        <div class="seg wrap">
+          <button type="button" class=${'seg-btn' + (!form.assignee ? ' on' : '')} onClick=${() => pickAssignee(null)}>Niemand</button>
+          ${users.map((u) => html`<button type="button" key=${u.email} class=${'seg-btn' + (form.assignee === u.email ? ' on' : '')}
+            onClick=${() => pickAssignee(u.email)}>${u.email === me ? 'Ich' : u.name}</button>`)}
+        </div></div>`}
       ${fromMeeting && html`<p class="meta">Aus dem Meeting <a href=${`#/meeting/${fromMeeting.id}`}>${fromMeeting.title}</a> vom ${shortDate(fromMeeting.held_at)}</p>`}
       ${isGuest ? html`${(person || org) && html`<div class="field"><span>Kontakt</span>
         <p class="small">${[person?.name, org?.name].filter(Boolean).join(' · ')}</p>
@@ -1298,6 +1444,10 @@ function CardSheet({ id, query }) {
           <button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}
       </div>
       ${card && html`<p class="meta">Angelegt ${fullDate(card.created_at)} · geändert ${relDate(card.updated_at)}</p>`}
+      ${history.length > 0 && html`<details class="more history"><summary>Verlauf <span class="count">${history.length}</span></summary>
+        ${history.map((e) => html`<div class="hist-row" key=${e.id}>
+          <span class="muted">${fullDate(e.at)}</span> <strong>${!e.actor ? 'System' : e.actor.toLowerCase() === me ? 'Du' : idx.userName.get(e.actor.toLowerCase()) || e.actor}</strong> ${historyText(e, idx)}</div>`)}
+      </details>`}
     </form>
     ${card && html`<${NotesPanel} filter=${{ card_id: card.id }}
       defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
@@ -1330,26 +1480,41 @@ function CardsPanel({ cards, newHref }) {
   </section>`;
 }
 
-// Startseite für Gäste: nur die Karten, die mit ihnen geteilt sind
+// Startseite für Gäste: was ihnen zugewiesen ist und alle geteilten Karten nach Projekten
 function GuestHome() {
-  const { cards, idx, users } = useApp();
+  const { cards, idx, users, me, project_shares } = useApp();
   const list = cards.filter((c) => !c.archived).sort(byUpdatedDesc);
   const owners = users.filter((u) => u.role === 'owner').map((u) => u.name).join(', ');
+  const mine = list.filter((c) => c.assignee && c.assignee.toLowerCase() === me && stageKind(idx.stage.get(c.stage_id)) !== 'done');
+  const fullProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
+  const byProject = new Map();
+  list.forEach((c) => {
+    if (!byProject.has(c.project_id)) byProject.set(c.project_id, []);
+    byProject.get(c.project_id).push(c);
+  });
+  fullProjects.forEach((pid) => { if (!byProject.has(pid)) byProject.set(pid, []); });
+  const row = (c) => {
+    const st = idx.stage.get(c.stage_id);
+    const pr = idx.project.get(c.project_id);
+    const person = idx.person.get(c.person_id);
+    return html`<a key=${c.id} class=${'mini-card' + (st?.is_done ? ' done' : '')} href=${`#/karte/${c.id}`} style=${`--pc:${pr?.color || '#888'}`}>
+      <span class="mini-title">${c.title}</span>
+      <span class="mini-meta"><span class="dot"></span>${[st?.name, person?.name].filter(Boolean).join(' · ')} · ${relDate(c.updated_at)}</span>
+      <span class="badges"><${CardBadges} card=${c} /><${TeamMarks} card=${c} /></span>
+    </a>`;
+  };
   return html`<div class="page">
     <${PageHead} title="Mit dir geteilt" count=${list.length} />
-    ${owners && html`<p class="muted small">Von ${owners}. Du siehst nur diese Deals und kannst Notizen schreiben sowie Spalte, Dringlichkeit und Fälligkeit ändern.</p>`}
-    ${list.length === 0
+    ${owners && html`<p class="muted small">Von ${owners}. Du kannst Notizen schreiben und Spalte, Dringlichkeit, Fälligkeit und Zuständigkeit ändern. In ganz geteilten Projekten kannst du auch Deals anlegen.</p>`}
+    ${mine.length > 0 && html`<section class="panel"><h3>Für dich <span class="count">${mine.length}</span></h3>${mine.map(row)}</section>`}
+    ${byProject.size === 0
     ? html`<div class="empty-state"><h2>Noch nichts geteilt</h2><p class="muted">Sobald ein Deal mit dir geteilt wird, steht er hier.</p></div>`
-    : html`<section class="panel">${list.map((c) => {
-      const st = idx.stage.get(c.stage_id);
-      const pr = idx.project.get(c.project_id);
-      const person = idx.person.get(c.person_id);
-      return html`<a key=${c.id} class=${'mini-card' + (st?.is_done ? ' done' : '')} href=${`#/karte/${c.id}`} style=${`--pc:${pr?.color || '#888'}`}>
-        <span class="mini-title">${c.title}</span>
-        <span class="mini-meta"><span class="dot"></span>${[pr?.name, st?.name, person?.name].filter(Boolean).join(' · ')} · ${relDate(c.updated_at)}</span>
-        <${CardBadges} card=${c} />
-      </a>`;
-    })}</section>`}
+    : [...byProject.entries()].map(([pid, cs]) => html`<section class="panel" key=${pid}>
+        <h3>${idx.project.get(pid)?.name || 'Projekt'} <span class="count">${cs.length}</span>
+          ${fullProjects.has(pid) && html`<a class="icon-btn" href=${`#/karte/neu?projekt=${pid}`} title="Deal anlegen" aria-label="Deal anlegen"><${Icon} n="plus" /></a>`}</h3>
+        ${cs.map(row)}
+        ${cs.length === 0 && html`<p class="muted small">Noch keine Deals.</p>`}
+      </section>`)}
   </div>`;
 }
 

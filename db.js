@@ -141,6 +141,11 @@ const remote = {
     const c = await client();
     return check(await c.from(table).update(patch).eq('id', id).select().single());
   },
+  // Einfügen oder bei vorhandenem Schlüssel ersetzen (z. B. „zuletzt gesehen“)
+  async upsert(table, row, onConflict) {
+    const c = await client();
+    return check(await c.from(table).upsert(row, { onConflict }).select().single());
+  },
   async remove(table, id) {
     const c = await client();
     check(await c.from(table).delete().eq('id', id));
@@ -150,9 +155,9 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v4';
+const KEY = 'crm-demo-v5';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
-  'emails', 'email_persons', 'events', 'event_persons', 'card_shares'];
+  'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen'];
 // Zum Ausprobieren der Gast-Ansicht: ?demo&gast in der Adresse
 const DEMO_GUEST = new URLSearchParams(location.search).has('gast');
 const DEMO_USERS = [
@@ -180,6 +185,26 @@ const copy = (r) => JSON.parse(JSON.stringify(r));
 function touch(table, id) {
   const r = id && state()[table].find((x) => x.id === id);
   if (r) r.updated_at = now();
+}
+
+// Verlauf wie die Trigger in supabase/05_team.sql
+const CARD_LOG = [['stage_id', 'spalte'], ['priority', 'dringlichkeit'], ['due_date', 'faellig'], ['assignee', 'zustaendig'],
+  ['title', 'titel'], ['project_id', 'projekt'], ['archived', 'archiv']];
+function logDemo(cardId, kind, detail) {
+  const s = state();
+  s.seq += 1;
+  s.card_events.push({ id: s.seq, card_id: cardId, at: now(), actor: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de', kind, detail: detail ?? null });
+}
+function logDemoUpdate(before, after) {
+  const s = state();
+  CARD_LOG.forEach(([field, kind]) => {
+    if ((before[field] ?? null) === (after[field] ?? null)) return;
+    const v = after[field];
+    const detail = field === 'stage_id' ? s.stages.find((x) => x.id === v)?.name
+      : field === 'project_id' ? s.projects.find((x) => x.id === v)?.name
+        : field === 'archived' ? (v ? 'ja' : 'nein') : v;
+    logDemo(after.id, kind, detail);
+  });
 }
 
 const demo = {
@@ -227,16 +252,31 @@ const demo = {
     s.seq += 1;
     const r = { id: s.seq, created_at: now(), updated_at: now(), ...(table === 'notes' ? { private: false, author: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de' } : {}), ...row };
     s[table].push(r);
-    if (table === 'notes') { touch('cards', r.card_id); touch('persons', r.person_id); }
+    if (table === 'notes') {
+      touch('cards', r.card_id);
+      touch('persons', r.person_id);
+      if (r.card_id && !r.private) logDemo(r.card_id, 'notiz');
+    }
+    if (table === 'cards') logDemo(r.id, 'angelegt');
     persist();
     return copy(r);
   },
   async update(table, id, patch) {
     const r = state()[table].find((x) => x.id === id);
     if (!r) throw new Error('Eintrag nicht gefunden');
+    const before = { ...r };
     Object.assign(r, patch, { updated_at: now() });
+    if (table === 'cards') logDemoUpdate(before, r);
     persist();
     return copy(r);
+  },
+  async upsert(table, row, onConflict) {
+    const s = state();
+    const keys = onConflict.split(',');
+    s[table] = s[table].filter((x) => !keys.every((k) => x[k] === row[k]));
+    s[table].push({ ...row });
+    persist();
+    return copy(row);
   },
   async remove(table, id) {
     const s = state();
@@ -245,6 +285,8 @@ const demo = {
     if (table === 'cards') {
       s.notes = s.notes.filter((n) => n.card_id !== id);
       s.card_shares = s.card_shares.filter((x) => x.card_id !== id);
+      s.card_events = s.card_events.filter((x) => x.card_id !== id);
+      s.card_seen = s.card_seen.filter((x) => x.card_id !== id);
     }
     if (table === 'persons') {
       unlink('cards', 'person_id');

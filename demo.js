@@ -8,6 +8,7 @@ export function demoSeed() {
   const s = {
     projects: [], stages: [], organizations: [], persons: [], cards: [], notes: [],
     meetings: [], meeting_persons: [], emails: [], email_persons: [], events: [], event_persons: [], card_shares: [],
+    project_shares: [], card_events: [], card_seen: [],
   };
 
   const projects = [['Vertrieb', '#7fa7c9'], ['Objekte', '#d98b4f'], ['Allgemein', '#a9b4ae'], ['Kooperationen', '#b08fd6']];
@@ -88,6 +89,13 @@ export function demoSeed() {
   note('Sucht 2–3 Zimmer, max. 50 km um Musterstadt.', { person: eva }, 8);
   // Geteilter Deal mit dem Demo-Gast (Gast-Ansicht: ?demo&gast)
   s.card_shares.push({ id: id(), card_id: rahmen.id, email: 'gast@beispiel.de', created_at: ago(2) });
+  rahmen.assignee = 'gast@beispiel.de';
+  // Verlauf: der Gast hat zuletzt etwas geändert, das sieht Alex als „Neu“
+  s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(3), actor: 'demo@beispiel.de', kind: 'angelegt', detail: null });
+  s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(2), actor: 'demo@beispiel.de', kind: 'zustaendig', detail: 'gast@beispiel.de' });
+  s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(1), actor: 'gast@beispiel.de', kind: 'notiz', detail: null });
+  s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(0, 5), actor: 'gast@beispiel.de', kind: 'faellig', detail: inDays(4) });
+  rahmen.due_date = inDays(4);
   note('Entwurf liegt bei Partner Süd, Rückmeldung bis Freitag zugesagt.', { card: rahmen }, 2);
   note('Preisrahmen intern: bis 5 % Nachlass vertretbar.', { card: rahmen }, 2, { private: true });
   note('Habe mit David telefoniert, Paragraf 4 wird noch angepasst.', { card: rahmen }, 1, { author: 'gast@beispiel.de' });
