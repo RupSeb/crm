@@ -609,6 +609,9 @@ function Main({ session }) {
   } else if (sec === 'einstellungen') {
     bg = lastParts.current || ['heute'];
     overlay = html`<${SettingsSheet} key="settings" onLogout=${logout} />`;
+  } else if (sec === 'termin' && a === 'neu') {
+    bg = lastParts.current || ['kalender'];
+    overlay = html`<${NewEventSheet} key=${'tn' + route.query} query=${route.query} />`;
   } else if (sec === 'termin') {
     bg = lastParts.current || ['kalender'];
     overlay = html`<${EventSheet} key=${'t' + a} event=${idx.event.get(Number(a))} />`;
@@ -1493,6 +1496,12 @@ function WeekView({ list, start, span }) {
   const allDay = list.filter((e) => e.all_day);
   const open = (e) => go('#/termin/' + e.id);
   const nowMin = (now - Date.parse(today + 'T00:00:00')) / 6e4;
+  // Klick in eine freie Stelle: neuer Termin zur angeklickten halben Stunde
+  const newAt = (ev, d) => {
+    if (ev.target !== ev.currentTarget) return;
+    const min = Math.floor(((ev.clientY - ev.currentTarget.getBoundingClientRect().top) / WK_HOUR) * 2) * 30;
+    go(`#/termin/neu?tag=${d}&zeit=${pad2(Math.floor(min / 60))}:${pad2(min % 60)}`);
+  };
 
   return html`<div class="wk" style=${`--days:${span};--hour:${WK_HOUR}px`}>
     <div class="wk-scroll" ref=${scroller}>
@@ -1516,7 +1525,7 @@ function WeekView({ list, start, span }) {
         <div class="wk-gutter wk-times">
           ${Array.from({ length: 23 }, (_, i) => html`<span key=${i} style=${`top:${(i + 1) * WK_HOUR}px`}>${String(i + 1).padStart(2, '0')}:00</span>`)}
         </div>
-        ${days.map((d) => html`<div key=${d} class=${'wk-col' + (d === today ? ' today' : '')}>
+        ${days.map((d) => html`<div key=${d} class=${'wk-col' + (d === today ? ' today' : '')} onClick=${(ev) => newAt(ev, d)}>
           ${layoutDay(timed.filter((e) => ts(e.start_at) < Date.parse(addDays(d, 1) + 'T00:00:00')
             && (ts(e.end_at) || ts(e.start_at) + 1) > Date.parse(d + 'T00:00:00')), d).map((it) => html`<div key=${it.e.id}
               class=${'wk-ev' + (isPast(it.e) ? ' past' : '') + (it.height < 34 ? ' short' : '')} role="link" tabindex="0"
@@ -1616,6 +1625,7 @@ function CalendarPage() {
     : html`<h1 class="cal-title">Termine</h1><span class="count">${list.length}</span>
         <button class="btn ghost sm" onClick=${() => setWithPast(!withPast)}>${withPast ? 'Ab heute' : 'Letzte 30 Tage'}</button>`}
       <span class="spacer"></span>
+      <a class="btn primary sm" href="#/termin/neu"><${Icon} n="plus" />Termin</a>
       <div class="seg small">
         <button class=${'seg-btn' + (view === 'woche' ? ' on' : '')} onClick=${() => pickView('woche')}>${isMobile ? '3 Tage' : 'Woche'}</button>
         <button class=${'seg-btn' + (view === 'liste' ? ' on' : '')} onClick=${() => pickView('liste')}>Liste</button>
@@ -1634,6 +1644,119 @@ function CalendarPage() {
       </div>
     </div>
   </div>`;
+}
+
+// Neuer Termin mit Einladungen: Das CRM darf die Kalender nur lesen. Es füllt deshalb
+// Google Kalender im gewählten Konto vor, Speichern dort verschickt die Einladungen.
+const pad2 = (n) => String(n).padStart(2, '0');
+function nextHalfHour() {
+  const d = new Date(Date.now() + 30 * 6e4);
+  d.setMinutes(d.getMinutes() < 30 ? 30 : 60, 0, 0);
+  return d;
+}
+function gcalTemplateUrl({ title, start, end, guests, details, location, meet, account }) {
+  const f = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: title, dates: `${f(start)}/${f(end)}` });
+  if (guests.length) p.set('add', guests.join(','));
+  if (details) p.set('details', details);
+  if (location) p.set('location', location);
+  if (meet) p.set('vcon', 'meet');
+  if (account) p.set('authuser', account);
+  return 'https://calendar.google.com/calendar/render?' + p;
+}
+
+function NewEventSheet({ query }) {
+  const { idx, persons, events } = useApp();
+  const close = () => back('#/kalender');
+  // Konten: die eigenen Kalender, die das CRM kennt (Kalender-ID = Mailadresse des Kontos)
+  const accounts = useMemo(() => {
+    const m = new Map();
+    events.forEach((e) => {
+      if (e.calendar_id.includes('@') && !e.calendar_id.endsWith('calendar.google.com')) m.set(e.calendar_id, e.calendar_name);
+    });
+    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], 'de'));
+  }, [events]);
+  const startDefault = (() => {
+    const d = nextHalfHour();
+    const day = query.get('tag') || localDay(d);
+    const time = query.get('zeit') || `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    return { day, time };
+  })();
+  const [title, setTitle] = useState('');
+  const [day, setDay] = useState(startDefault.day);
+  const [from, setFrom] = useState(startDefault.time);
+  const [minutes, setMinutes] = useState(30);
+  const [guests, setGuests] = useState(() => {
+    const p = query.get('gast') && idx.person.get(Number(query.get('gast')));
+    return p && p.emails[0] ? [{ email: p.emails[0], name: p.name }] : [];
+  });
+  const [extra, setExtra] = useState('');
+  const [location, setLocation] = useState('');
+  const [details, setDetails] = useState('');
+  const [meet, setMeet] = useState(true);
+  const [account, setAccount] = useState(() => {
+    const saved = ls.get('crm-invite-account');
+    return accounts.some(([id]) => id === saved) ? saved : accounts[0]?.[0] || '';
+  });
+
+  const start = new Date(`${day}T${from || '09:00'}`);
+  const end = new Date(start.getTime() + minutes * 6e4);
+  const until = `${pad2(end.getHours())}:${pad2(end.getMinutes())}`;
+  const setUntil = (t) => {
+    const e = new Date(`${day}T${t}`);
+    if (e > start) setMinutes(Math.round((e - start) / 6e4));
+  };
+  const withMail = useMemo(() => persons.filter((p) => (p.emails || []).length), [persons]);
+  const addGuest = (email, name = '') => {
+    const m = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m) || guests.some((g) => g.email === m)) return;
+    setGuests([...guests, { email: m, name }]);
+  };
+  const addExtra = () => { extra.split(/[\s,;]+/).forEach((m) => addGuest(m)); setExtra(''); };
+  const valid = title.trim() && !Number.isNaN(start.getTime()) && minutes > 0;
+
+  function submit(e) {
+    e.preventDefault();
+    if (!valid) return;
+    ls.set('crm-invite-account', account);
+    window.open(gcalTemplateUrl({
+      title: title.trim(), start, end, guests: guests.map((g) => g.email),
+      details: details.trim(), location: location.trim(), meet, account,
+    }), '_blank', 'noopener');
+    close();
+  }
+
+  return html`<${Sheet} title="Neuer Termin" onClose=${close}>
+    <form class="form" onSubmit=${submit}>
+      <label class="field"><span>Titel</span>
+        <input value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="z. B. Erstgespräch Musterfirma" required /></label>
+      <div class="field-row">
+        <label class="field grow"><span>Datum</span><input type="date" value=${day} onInput=${(e) => setDay(e.target.value)} required /></label>
+        <label class="field"><span>Von</span><input type="time" step="900" value=${from} onInput=${(e) => setFrom(e.target.value)} required /></label>
+        <label class="field"><span>Bis</span><input type="time" step="900" value=${until} onInput=${(e) => setUntil(e.target.value)} /></label>
+      </div>
+      <div class="field"><span>Gäste</span>
+        ${guests.length > 0 && html`<div class="participants">${guests.map((g) => html`<span class="chip person" key=${g.email}>
+          ${g.name || g.email}<button type="button" class="chip-x" aria-label=${`${g.email} entfernen`}
+            onClick=${() => setGuests(guests.filter((x) => x.email !== g.email))}>×</button></span>`)}</div>`}
+        <${Combobox} items=${withMail} value=${null} label=${(p) => p.name} sub=${(p) => p.emails[0]}
+          placeholder="Kontakt suchen" onChange=${(id) => { const p = idx.person.get(id); if (p) addGuest(p.emails[0], p.name); }} />
+        <input type="email" value=${extra} placeholder="oder Mailadresse eintippen und Enter" onInput=${(e) => setExtra(e.target.value)}
+          onKeyDown=${(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addExtra(); } }} onBlur=${addExtra} />
+      </div>
+      <label class="field"><span>Ort (optional)</span><input value=${location} onInput=${(e) => setLocation(e.target.value)} /></label>
+      <label class="field"><span>Beschreibung (optional)</span>
+        <textarea rows="3" value=${details} onInput=${(e) => setDetails(e.target.value)}></textarea></label>
+      <label class="check-line"><input type="checkbox" checked=${meet} onChange=${(e) => setMeet(e.target.checked)} /> Google Meet hinzufügen</label>
+      <label class="field"><span>Einladen aus Kalender</span>
+        <select value=${account} onChange=${(e) => setAccount(e.target.value)}>
+          ${accounts.map(([id, name]) => html`<option key=${id} value=${id}>${name} (${id})</option>`)}
+          <option value="">Konto, das im Browser angemeldet ist</option>
+        </select></label>
+      <button class="btn primary full" disabled=${!valid}><${Icon} n="calendar" />In Google Kalender öffnen</button>
+      <p class="muted small">Google Kalender öffnet sich mit allem ausgefüllt. Dort auf „Speichern“ klicken, dann verschickt Google die Einladungen. Fehlt der Meet-Link, dort „Google Meet-Videokonferenz hinzufügen“ wählen. Im CRM erscheint der Termin nach dem nächsten Abgleich, spätestens nach 15 Minuten.</p>
+    </form>
+  <//>`;
 }
 
 function TodayEvents() {
@@ -2102,6 +2225,9 @@ function PersonPage({ person: p }) {
       <a class="btn" href=${`#/kontakt/${p.id}/bearbeiten`}>Bearbeiten</a>
     </div>
     <${ContactActions} phones=${p.phones} emails=${p.emails} />
+    ${p.emails.length > 0 && html`<div class="contact-actions">
+      <a class="btn" href=${`#/termin/neu?gast=${p.id}`}><${Icon} n="calendar" />Termin einladen</a>
+    </div>`}
     <div class="detail-grid">
       <div class="detail-side">
         <${CardsPanel} cards=${pcards} newHref=${`#/karte/neu?kontakt=${p.id}`} />

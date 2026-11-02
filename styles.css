@@ -309,6 +309,9 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .chip.cal { opacity: 0.55; }
 .chip.cal.on { opacity: 1; background: var(--surface-2); color: var(--text); border-color: var(--cc); }
 
+.check-line { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.check-line input { width: 18px; height: 18px; accent-color: var(--gold); }
+
 /* Kalender: Wochenansicht wie Google Kalender */
 .cal-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .cal-toolbar .icon-btn { width: 34px; height: 34px; border-radius: 50%; }
