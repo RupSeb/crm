@@ -311,6 +311,18 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 
 .check-line { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
 .check-line input { width: 18px; height: 18px; accent-color: var(--gold); }
+.check-line.small { gap: 6px; font-size: 13px; color: var(--muted); }
+.check-line.small input { width: 15px; height: 15px; }
+.check-line .ico, .badge .ico, .chip .ico, .btn.xs .ico { width: 13px; height: 13px; }
+
+/* Teilen mit Gästen */
+.chip.toggle.share { display: inline-flex; align-items: center; gap: 6px; }
+.share-field .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.shared-mark { display: inline-flex; color: var(--gold-l); }
+.shared-mark .ico { width: 14px; height: 14px; }
+.badge.author { background: var(--accent-soft); color: var(--gold-l); }
+.badge.private { display: inline-flex; align-items: center; gap: 4px; }
+.shell.guest .tabbar { display: none; }
 
 /* Kalender: Wochenansicht wie Google Kalender */
 .cal-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }

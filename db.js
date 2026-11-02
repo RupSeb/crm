@@ -97,6 +97,11 @@ const remote = {
     const c = await client();
     await c.auth.signOut();
   },
+  // Datenbank-Funktionen (my_role, crm_users)
+  async rpc(fn, args = {}) {
+    const c = await client();
+    return check(await c.rpc(fn, args));
+  },
   async list(table, filter = {}, columns = '*') {
     const c = await client();
     const out = [];
@@ -145,9 +150,15 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v3';
+const KEY = 'crm-demo-v4';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
-  'emails', 'email_persons', 'events', 'event_persons'];
+  'emails', 'email_persons', 'events', 'event_persons', 'card_shares'];
+// Zum Ausprobieren der Gast-Ansicht: ?demo&gast in der Adresse
+const DEMO_GUEST = new URLSearchParams(location.search).has('gast');
+const DEMO_USERS = [
+  { email: 'demo@beispiel.de', name: 'Alex Demo', role: 'owner' },
+  { email: 'gast@beispiel.de', name: 'Gerd Gast', role: 'gast' },
+];
 let mem = null;
 
 function state() {
@@ -172,7 +183,7 @@ function touch(table, id) {
 }
 
 const demo = {
-  async session() { return { user: { email: 'demo@beispiel.de' } }; },
+  async session() { return { user: { email: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de' } }; },
   async onAuth() {},
   async signIn() { return demo.session(); },
   async signUp() { return demo.session(); },
@@ -182,6 +193,11 @@ const demo = {
   async mfaEnroll() { return { factorId: 'demo', qr: '', secret: 'DEMO', uri: '' }; },
   async mfaVerify() {},
   async mfaRemoveOthers() {},
+  async rpc(fn) {
+    if (fn === 'my_role') return DEMO_GUEST ? 'gast' : 'owner';
+    if (fn === 'crm_users') return DEMO_USERS;
+    return null;
+  },
   async signOut() {
     try { localStorage.removeItem(KEY); } catch { /* egal */ }
     location.reload();
@@ -209,7 +225,7 @@ const demo = {
   async insert(table, row) {
     const s = state();
     s.seq += 1;
-    const r = { id: s.seq, created_at: now(), updated_at: now(), ...row };
+    const r = { id: s.seq, created_at: now(), updated_at: now(), ...(table === 'notes' ? { private: false, author: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de' } : {}), ...row };
     s[table].push(r);
     if (table === 'notes') { touch('cards', r.card_id); touch('persons', r.person_id); }
     persist();
@@ -226,7 +242,10 @@ const demo = {
     const s = state();
     s[table] = s[table].filter((x) => x.id !== id);
     const unlink = (t, key) => s[t].forEach((r) => { if (r[key] === id) r[key] = null; });
-    if (table === 'cards') s.notes = s.notes.filter((n) => n.card_id !== id);
+    if (table === 'cards') {
+      s.notes = s.notes.filter((n) => n.card_id !== id);
+      s.card_shares = s.card_shares.filter((x) => x.card_id !== id);
+    }
     if (table === 'persons') {
       unlink('cards', 'person_id');
       unlink('notes', 'person_id');

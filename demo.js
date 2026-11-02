@@ -7,7 +7,7 @@ export function demoSeed() {
   const id = () => ++seq;
   const s = {
     projects: [], stages: [], organizations: [], persons: [], cards: [], notes: [],
-    meetings: [], meeting_persons: [], emails: [], email_persons: [], events: [], event_persons: [],
+    meetings: [], meeting_persons: [], emails: [], email_persons: [], events: [], event_persons: [], card_shares: [],
   };
 
   const projects = [['Vertrieb', '#7fa7c9'], ['Objekte', '#d98b4f'], ['Allgemein', '#a9b4ae'], ['Kooperationen', '#b08fd6']];
@@ -64,7 +64,7 @@ export function demoSeed() {
   };
   const angebot = card('Angebot Kundenportal schreiben', 'Vertrieb', 'To-Dos', anna, 0, { priority: 'hoch', due_date: inDays(0) });
   card('Präsentation aktualisiert zuschicken', 'Kooperationen', 'To-Dos', david, 1, { priority: 'mittel', due_date: inDays(2) });
-  card('Rahmenvertrag – Rückmeldung?', 'Kooperationen', 'Feedback von Anderen', david, 2);
+  const rahmen = card('Rahmenvertrag – Rückmeldung?', 'Kooperationen', 'Feedback von Anderen', david, 2);
   card('Rollout Kundenportal', 'Vertrieb', 'Ongoing', anna, 4);
   card('Kooperation Region Süd', 'Kooperationen', 'Zukünftig', null, 20);
   card('Termin Musterfirma vorbereiten', 'Vertrieb', 'Erledigt', anna, 6);
@@ -76,15 +76,21 @@ export function demoSeed() {
   card('Neue Zielgruppe testen', 'Vertrieb', 'To-Dos', ben, 0);
   card('Rechnungen einfordern', 'Allgemein', 'To-Dos', null, 5, { priority: 'niedrig' });
 
-  const note = (content, ref, days, source = 'manual') => {
+  const note = (content, ref, days, extra = {}) => {
     s.notes.push({
       id: id(), content, card_id: ref.card?.id ?? null, person_id: ref.person?.id ?? ref.card?.person_id ?? null,
-      org_id: ref.person?.org_id ?? ref.card?.org_id ?? null, source, created_at: ago(days), updated_at: ago(days),
+      org_id: ref.person?.org_id ?? ref.card?.org_id ?? null, source: 'manual', private: false, author: 'demo@beispiel.de',
+      created_at: ago(days), updated_at: ago(days), ...extra,
     });
   };
   note('Vertrag soweit ok, kleine Flächenanpassungen.<br>Nächster Schritt: Rückmeldung vom Anwalt abwarten.', { card: vertrag }, 3);
   note('Bedarf: ca. 40 Zugänge, Start im Januar möglich.', { card: angebot }, 1);
   note('Sucht 2–3 Zimmer, max. 50 km um Musterstadt.', { person: eva }, 8);
+  // Geteilter Deal mit dem Demo-Gast (Gast-Ansicht: ?demo&gast)
+  s.card_shares.push({ id: id(), card_id: rahmen.id, email: 'gast@beispiel.de', created_at: ago(2) });
+  note('Entwurf liegt bei Partner Süd, Rückmeldung bis Freitag zugesagt.', { card: rahmen }, 2);
+  note('Preisrahmen intern: bis 5 % Nachlass vertretbar.', { card: rahmen }, 2, { private: true });
+  note('Habe mit David telefoniert, Paragraf 4 wird noch angepasst.', { card: rahmen }, 1, { author: 'gast@beispiel.de' });
 
   const projectId = (name) => s.projects.find((p) => p.name === name).id;
   const meeting = (title, project, days, minutes, people, extra, summary) => {
