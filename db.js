@@ -145,7 +145,7 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v2';
+const KEY = 'crm-demo-v3';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons'];
 let mem = null;

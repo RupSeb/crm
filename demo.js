@@ -147,6 +147,12 @@ export function demoSeed() {
   event('Zahnarzt', 'Privat', '#e07a7a', 0, 18, 45, []);
   event('Besichtigung Musterstadt', 'Objekte', '#d98b4f', 1, 12, 60, [eva], { location: 'Musterstraße 5, Musterstadt' });
   event('Partner-Call', 'Kooperationen', '#6fb58f', 2, 9, 30, [david]);
+  event('Messeplanung', 'Kooperationen', '#6fb58f', 0, 10, 60, [david]);
+  event('Steuerunterlagen sortieren', 'Privat', '#e07a7a', -1, 16, 90, []);
+  event('Wochenrunde Vertrieb', 'Vertrieb', '#7fa7c9', 4, 15, 50, [ben]);
+  event('Messe Musterstadt', 'Kooperationen', '#6fb58f', 3, 0, 0, [], {
+    all_day: true, start_at: inDays(3) + 'T00:00:00Z', end_at: inDays(5) + 'T00:00:00Z',
+  });
 
   mail(david, 'in', 'Rückfrage Vertrag', 3, 'Moin,\n\nkurze Rückfrage zu Paragraf 4 im Vertragsentwurf. Passt Ihnen ein Telefonat am Montag?\n\nDavid Test');
 

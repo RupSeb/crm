@@ -197,6 +197,7 @@ const ICONS = {
   link: '<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
+  next: '<path d="M9 5l7 7-7 7"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
   mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/>',
   home: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><path d="M14 17l2 2 4-4"/>',
@@ -1417,11 +1418,158 @@ function EventDays({ list }) {
   </div>`)}`;
 }
 
+// Wochenansicht wie in Google Kalender: Zeitraster, Termine als Blöcke, Linie für jetzt
+const WK_HOUR = 48; // Pixel pro Stunde
+const WK_DOW = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+const MONTHS_SHORT = ['Jan.', 'Feb.', 'März', 'Apr.', 'Mai', 'Juni', 'Juli', 'Aug.', 'Sept.', 'Okt.', 'Nov.', 'Dez.'];
+const dateOf = (day) => new Date(day + 'T12:00:00');
+const mondayOf = (day) => addDays(day, -((dateOf(day).getDay() + 6) % 7));
+function isoWeek(day) {
+  const d = dateOf(day);
+  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7)); // Donnerstag dieser Woche
+  const jan4 = new Date(d.getFullYear(), 0, 4, 12);
+  return 1 + Math.round(((d - jan4) / 864e5 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
+}
+function rangeTitle(first, last) {
+  const a = dateOf(first);
+  const b = dateOf(last);
+  const month = (d) => d.toLocaleDateString('de-DE', { month: 'long' });
+  if (a.getMonth() === b.getMonth()) return `${month(a)} ${a.getFullYear()}`;
+  const short = (d) => MONTHS_SHORT[d.getMonth()];
+  return a.getFullYear() === b.getFullYear() ? `${short(a)} – ${short(b)} ${b.getFullYear()}`
+    : `${short(a)} ${a.getFullYear()} – ${short(b)} ${b.getFullYear()}`;
+}
+// Dunkle oder helle Schrift je nach Kalenderfarbe
+function inkFor(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return '#1b2521';
+  const n = parseInt(m[1], 16);
+  return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255 > 0.55 ? '#1b2521' : '#ffffff';
+}
+// Termine eines Tages anordnen: was sich überschneidet, steht nebeneinander
+function layoutDay(evs, day) {
+  const start = Date.parse(day + 'T00:00:00');
+  const end = Date.parse(addDays(day, 1) + 'T00:00:00');
+  const items = evs.map((e) => {
+    const s = Math.max(ts(e.start_at), start);
+    const en = Math.min(ts(e.end_at) || s + 30 * 6e4, end);
+    return { e, s, en: Math.max(en, s + 20 * 6e4) }; // sehr kurze Termine mindestens 20 Minuten hoch
+  }).sort((a, b) => a.s - b.s || b.en - a.en);
+  const out = [];
+  let cluster = [];
+  let cols = [];
+  let clusterEnd = 0;
+  const flush = () => { cluster.forEach((it) => { it.n = cols.length; }); out.push(...cluster); cluster = []; cols = []; };
+  items.forEach((it) => {
+    if (cluster.length && it.s >= clusterEnd) flush();
+    let c = cols.findIndex((free) => free <= it.s);
+    if (c < 0) { c = cols.length; cols.push(it.en); } else cols[c] = it.en;
+    it.col = c;
+    cluster.push(it);
+    clusterEnd = cluster.length === 1 ? it.en : Math.max(clusterEnd, it.en);
+  });
+  flush();
+  return out.map((it) => ({ ...it, top: ((it.s - start) / 36e5) * WK_HOUR, height: ((it.en - it.s) / 36e5) * WK_HOUR }));
+}
+// Ganztägige Termine: Google liefert das Ende als Folgetag (exklusiv)
+const allDayCovers = (e, day) => {
+  const from = e.start_at.slice(0, 10);
+  const to = e.end_at ? e.end_at.slice(0, 10) : addDays(from, 1);
+  return day >= from && day < to;
+};
+
+function WeekView({ list, start, span }) {
+  const days = Array.from({ length: span }, (_, i) => addDays(start, i));
+  const scroller = useRef(null);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60e3);
+    return () => clearInterval(t);
+  }, []);
+  // Beim Öffnen auf 7 Uhr scrollen
+  useEffect(() => { if (scroller.current) scroller.current.scrollTop = 7 * WK_HOUR; }, []);
+  const today = todayStr();
+  const timed = list.filter((e) => !e.all_day);
+  const allDay = list.filter((e) => e.all_day);
+  const open = (e) => go('#/termin/' + e.id);
+  const nowMin = (now - Date.parse(today + 'T00:00:00')) / 6e4;
+
+  return html`<div class="wk" style=${`--days:${span};--hour:${WK_HOUR}px`}>
+    <div class="wk-scroll" ref=${scroller}>
+      <div class="wk-sticky">
+        <div class="wk-row wk-head">
+          <div class="wk-gutter"></div>
+          ${days.map((d) => html`<div key=${d} class=${'wk-dayhead' + (d === today ? ' today' : '') + (d < today ? ' past' : '')}>
+            <span class="wk-dow">${WK_DOW[dateOf(d).getDay()]}</span><span class="wk-date">${dateOf(d).getDate()}</span>
+          </div>`)}
+        </div>
+        ${allDay.length > 0 && html`<div class="wk-row wk-allday">
+          <div class="wk-gutter wk-adlabel">ganztägig</div>
+          ${days.map((d) => html`<div key=${d} class="wk-adcell">
+            ${allDay.filter((e) => allDayCovers(e, d)).map((e) => html`<button key=${e.id} class="wk-ad"
+              style=${`--cc:${e.calendar_color || '#a9b4ae'};color:${inkFor(e.calendar_color)}`} title=${e.title}
+              onClick=${() => open(e)}>${e.title}</button>`)}
+          </div>`)}
+        </div>`}
+      </div>
+      <div class="wk-row wk-body">
+        <div class="wk-gutter wk-times">
+          ${Array.from({ length: 23 }, (_, i) => html`<span key=${i} style=${`top:${(i + 1) * WK_HOUR}px`}>${String(i + 1).padStart(2, '0')}:00</span>`)}
+        </div>
+        ${days.map((d) => html`<div key=${d} class=${'wk-col' + (d === today ? ' today' : '')}>
+          ${layoutDay(timed.filter((e) => ts(e.start_at) < Date.parse(addDays(d, 1) + 'T00:00:00')
+            && (ts(e.end_at) || ts(e.start_at) + 1) > Date.parse(d + 'T00:00:00')), d).map((it) => html`<div key=${it.e.id}
+              class=${'wk-ev' + (isPast(it.e) ? ' past' : '') + (it.height < 34 ? ' short' : '')} role="link" tabindex="0"
+              title=${`${timeRange(it.e)} ${it.e.title}`}
+              style=${`top:${it.top}px;height:${it.height - 2}px;left:calc(${it.col} * 100% / ${it.n});width:calc(100% / ${it.n} - 3px);--cc:${it.e.calendar_color || '#a9b4ae'};color:${inkFor(it.e.calendar_color)}`}
+              onClick=${() => open(it.e)} onKeyDown=${(ev) => { if (ev.key === 'Enter') open(it.e); }}>
+            <span class="wk-ev-title">${it.e.title}</span>
+            <span class="wk-ev-time">${it.height < 34 ? ', ' : ''}${timeRange(it.e)}</span>
+          </div>`)}
+          ${d === today && html`<div class="wk-now" style=${`top:${(nowMin / 60) * WK_HOUR}px`}></div>`}
+        </div>`)}
+      </div>
+    </div>
+  </div>`;
+}
+
+// Kleiner Monatskalender links (wie in Google Kalender), Klick springt zur Woche
+function MiniMonth({ first, span, onPick }) {
+  const [month, setMonth] = useState(() => first.slice(0, 7));
+  useEffect(() => { setMonth(first.slice(0, 7)); }, [first]);
+  const start = mondayOf(month + '-01');
+  const weeks = Array.from({ length: 6 }, (_, w) => Array.from({ length: 7 }, (_, i) => addDays(start, w * 7 + i)));
+  const shift = (n) => {
+    const d = dateOf(month + '-01');
+    d.setMonth(d.getMonth() + n);
+    setMonth(localDay(d).slice(0, 7));
+  };
+  const today = todayStr();
+  const last = addDays(first, span - 1);
+  return html`<div class="mini-month">
+    <div class="mm-head">
+      <strong>${dateOf(month + '-01').toLocaleDateString('de-DE', { month: 'long', year: 'numeric' })}</strong>
+      <span class="spacer"></span>
+      <button class="icon-btn sm" aria-label="Voriger Monat" onClick=${() => shift(-1)}><${Icon} n="back" /></button>
+      <button class="icon-btn sm" aria-label="Nächster Monat" onClick=${() => shift(1)}><${Icon} n="next" /></button>
+    </div>
+    <div class="mm-grid">
+      <span class="mm-kw"></span>${['M', 'D', 'M', 'D', 'F', 'S', 'S'].map((x, i) => html`<span key=${i} class="mm-dow">${x}</span>`)}
+      ${weeks.map((w) => html`<span key=${'k' + w[0]} class="mm-kw">${isoWeek(w[0])}</span>
+        ${w.map((d) => html`<button key=${d} onClick=${() => onPick(d)}
+          class=${['mm-day', d.slice(0, 7) !== month && 'other', d === today && 'today', d >= first && d <= last && 'sel'].filter(Boolean).join(' ')}>
+          ${dateOf(d).getDate()}</button>`)}`)}
+    </div>
+  </div>`;
+}
+
 function CalendarPage() {
-  const { idx } = useApp();
+  const { idx, isMobile } = useApp();
   const [hidden, setHidden] = useState(() => {
     try { return new Set(JSON.parse(ls.get('crm-cal-hidden') || '[]')); } catch { return new Set(); }
   });
+  const [view, setView] = useState(() => ls.get('crm-cal-view') || 'woche');
+  const [anchor, setAnchor] = useState(null); // null = aktuelle Woche bzw. ab heute
   const [withPast, setWithPast] = useState(false);
   const calendars = useMemo(() => {
     const m = new Map();
@@ -1436,20 +1584,55 @@ function CalendarPage() {
     setHidden(s);
     ls.set('crm-cal-hidden', JSON.stringify([...s]));
   }
-  const from = withPast ? addDays(todayStr(), -30) : todayStr();
-  const list = idx.events.filter((e) => eventDay(e) >= from
-    && !(idx.calendarsOf.get(e.id) || [e.calendar_name]).every((c) => hidden.has(c)));
+  const pickView = (v) => { setView(v); ls.set('crm-cal-view', v); };
+  const shown = (e) => !(idx.calendarsOf.get(e.id) || [e.calendar_name]).every((c) => hidden.has(c));
 
-  return html`<div class="page">
-    <${PageHead} title="Kalender" count=${list.length}
-      action=${html`<button class="btn ghost sm" onClick=${() => setWithPast(!withPast)}>${withPast ? 'Ab heute' : 'Letzte 30 Tage zeigen'}</button>`} />
-    ${calendars.length > 0 && html`<div class="label-filter">
-      ${calendars.map(([name, color]) => html`<button key=${name} class=${'chip toggle cal' + (hidden.has(name) ? '' : ' on')}
-        style=${`--cc:${color || '#a9b4ae'}`} onClick=${() => toggle(name)}><span class="dot"></span>${name}</button>`)}
-    </div>`}
-    ${idx.events.length === 0
-    ? html`<div class="empty-state"><h2>Noch keine Termine</h2><p class="muted">Sobald der Kalender-Abgleich eingerichtet ist, stehen hier alle Termine aus deinen Kalendern.</p></div>`
+  // Am Rechner die Woche ab Montag, am Handy drei Tage ab heute
+  const span = isMobile ? 3 : 7;
+  const first = anchor || (isMobile ? todayStr() : mondayOf(todayStr()));
+  const last = addDays(first, span - 1);
+  const pick = (day) => { setAnchor(isMobile ? day : mondayOf(day)); pickView('woche'); };
+  const weekList = idx.events.filter((e) => shown(e) && eventDay(e) <= last
+    && (e.all_day ? (e.end_at ? addDays(e.end_at.slice(0, 10), -1) : eventDay(e)) : localDay(e.end_at || e.start_at)) >= first);
+  const from = withPast ? addDays(todayStr(), -30) : todayStr();
+  const list = idx.events.filter((e) => shown(e) && eventDay(e) >= from);
+
+  const calendarToggles = html`${calendars.map(([name, color]) => html`<button key=${name}
+    class=${'chip toggle cal' + (hidden.has(name) ? '' : ' on')} style=${`--cc:${color || '#a9b4ae'}`}
+    onClick=${() => toggle(name)}><span class="dot"></span>${name}</button>`)}`;
+
+  if (idx.events.length === 0) {
+    return html`<div class="page"><${PageHead} title="Kalender" />
+      <div class="empty-state"><h2>Noch keine Termine</h2><p class="muted">Sobald der Kalender-Abgleich eingerichtet ist, stehen hier alle Termine aus deinen Kalendern.</p></div></div>`;
+  }
+  return html`<div class="page cal-page">
+    <div class="cal-toolbar">
+      ${view === 'woche' ? html`
+        <button class="btn sm" onClick=${() => setAnchor(null)}>Heute</button>
+        <button class="icon-btn" aria-label="Zurück" onClick=${() => setAnchor(addDays(first, -span))}><${Icon} n="back" /></button>
+        <button class="icon-btn" aria-label="Weiter" onClick=${() => setAnchor(addDays(first, span))}><${Icon} n="next" /></button>
+        <h1 class="cal-title">${rangeTitle(first, last)}</h1>
+        ${!isMobile && html`<span class="badge">KW ${isoWeek(first)}</span>`}`
+    : html`<h1 class="cal-title">Termine</h1><span class="count">${list.length}</span>
+        <button class="btn ghost sm" onClick=${() => setWithPast(!withPast)}>${withPast ? 'Ab heute' : 'Letzte 30 Tage'}</button>`}
+      <span class="spacer"></span>
+      <div class="seg small">
+        <button class=${'seg-btn' + (view === 'woche' ? ' on' : '')} onClick=${() => pickView('woche')}>${isMobile ? '3 Tage' : 'Woche'}</button>
+        <button class=${'seg-btn' + (view === 'liste' ? ' on' : '')} onClick=${() => pickView('liste')}>Liste</button>
+      </div>
+    </div>
+    <div class="cal-layout">
+      <aside class="cal-side">
+        <${MiniMonth} first=${first} span=${view === 'woche' ? span : 0} onPick=${pick} />
+        <h3 class="cal-side-title">Kalender</h3>
+        <div class="cal-side-list">${calendarToggles}</div>
+      </aside>
+      <div class="cal-main">
+        ${calendars.length > 0 && html`<div class="label-filter cal-chips">${calendarToggles}</div>`}
+        ${view === 'woche' ? html`<${WeekView} list=${weekList} start=${first} span=${span} />`
     : html`<div class="tile ev-list"><${EventDays} list=${list} />${list.length === 0 && html`<p class="muted small">Keine Termine im gewählten Zeitraum.</p>`}</div>`}
+      </div>
+    </div>
   </div>`;
 }
 
