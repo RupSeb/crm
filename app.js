@@ -200,6 +200,7 @@ const ICONS = {
   next: '<path d="M9 5l7 7-7 7"/>',
   share: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0111 0M16 5a3 3 0 010 6M20.5 20a5.5 5.5 0 00-3.5-5.1"/>',
   lock: '<rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 017 0v3"/>',
+  file: '<path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
   mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"/>',
   home: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><path d="M14 17l2 2 4-4"/>',
@@ -607,6 +608,8 @@ function Main({ session }) {
     // Neu: jemand anderes hat seit meinem letzten Öffnen etwas geändert
     const isNew = (c) => (historyOf.get(c.id) || []).some((e) => e.actor && e.actor.toLowerCase() !== me
       && (!seenAt.has(c.id) || ts(e.at) > seenAt.get(c.id)));
+    const mentionedMe = (c) => (historyOf.get(c.id) || []).some((e) => e.kind === 'erwaehnung'
+      && (e.detail || '').toLowerCase() === me && (!seenAt.has(c.id) || ts(e.at) > seenAt.get(c.id)));
     // Sieht ein Gast diese Karte? Direkt geteilt oder über ihr Projekt
     const visibleFor = (c, email) => (sharesOf.get(c.id) || []).some((x) => x.email.toLowerCase() === email)
       || (projectSharesOf.get(c.project_id) || []).some((x) => x.email.toLowerCase() === email);
@@ -615,6 +618,7 @@ function Main({ session }) {
       projectSharesOf,
       historyOf,
       isNew,
+      mentionedMe,
       visibleFor,
       userName,
       project: byId(data.projects),
@@ -1246,7 +1250,8 @@ function TeamMarks({ card }) {
   const { idx, me, users } = useApp();
   if (users.length < 2) return null;
   const other = card.assignee && card.assignee.toLowerCase() !== me ? idx.userName.get(card.assignee.toLowerCase()) || card.assignee : null;
-  return html`${idx.isNew(card) && html`<span class="badge new" title="Jemand anderes hat seit deinem letzten Öffnen etwas geändert">Neu</span>`}
+  return html`${idx.mentionedMe(card) && html`<span class="badge mention-badge" title="Du wurdest in einer Notiz erwähnt">@ dich</span>`}
+    ${idx.isNew(card) && html`<span class="badge new" title="Jemand anderes hat seit deinem letzten Öffnen etwas geändert">Neu</span>`}
     ${other && html`<span class="badge assignee" title=${`Zuständig: ${other}`}>${other.split(' ')[0]}</span>`}`;
 }
 
@@ -1267,6 +1272,64 @@ function CardItem({ card, dragging, onDragStart, onDragEnd }) {
   </a>`;
 }
 
+// Dateien an einer Karte (Storage-Bucket „dateien“, Pfad karten/<id>/<zeit>-<name>)
+const fileLabel = (name) => name.replace(/^\d{10,}-/, '').replace(/_/g, ' ');
+// Storage erlaubt nur einfache Zeichen: Umlaute ausschreiben, Akzente weg, Leerzeichen als _
+const safeFileName = (name) => name.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/Ä/g, 'Ae')
+  .replace(/Ö/g, 'Oe').replace(/Ü/g, 'Ue').replace(/ß/g, 'ss').normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/\s+/g, '_').replace(/[^A-Za-z0-9._-]+/g, '-').slice(-120);
+const fileSize = (n) => (n > 1e6 ? `${(n / 1e6).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+
+function FilesPanel({ card }) {
+  const { actions, isGuest } = useApp();
+  const [files, setFiles] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const prefix = `karten/${card.id}`;
+  const load = () => db.listFiles(prefix).then(setFiles).catch((e) => { actions.fail(e); setFiles([]); });
+  useEffect(() => { load(); }, [card.id]);
+
+  async function upload(e) {
+    const list = [...e.target.files];
+    e.target.value = '';
+    if (!list.length) return;
+    setBusy(true);
+    try {
+      for (const f of list) {
+        if (f.size > 25e6) { actions.notify(`„${f.name}“ ist größer als 25 MB.`); continue; }
+        await db.uploadFile(`${prefix}/${Date.now()}-${safeFileName(f.name)}`, f);
+        await db.rpc('log_file', { cid: card.id, fname: f.name }).catch(() => {});
+      }
+      await load();
+      actions.reloadHistory(card.id);
+    } catch (err) { actions.fail(err); } finally { setBusy(false); }
+  }
+  async function open(f) {
+    // Fenster sofort öffnen, sonst blockt das iPhone es nach dem Warten auf den Link
+    const w = window.open('', '_blank');
+    try {
+      const url = await db.fileUrl(`${prefix}/${f.name}`);
+      if (w) w.location.href = url; else location.href = url;
+    } catch (e) { if (w) w.close(); actions.fail(e); }
+  }
+  async function del(f) {
+    if (!confirm(`„${fileLabel(f.name)}“ löschen?`)) return;
+    try { await db.removeFile(`${prefix}/${f.name}`); await load(); } catch (e) { actions.fail(e); }
+  }
+
+  return html`<section class="files">
+    <h3>Dateien ${files && html`<span class="count">${files.length}</span>`}
+      <label class=${'btn sm' + (busy ? ' disabled' : '')}><${Icon} n="plus" />${busy ? 'Lädt hoch …' : 'Datei hinzufügen'}
+        <input type="file" multiple hidden disabled=${busy} onChange=${upload} /></label></h3>
+    ${files === null ? html`<p class="muted small">Lädt …</p>`
+    : files.length === 0 ? html`<p class="muted small">Noch keine Dateien. Exposé, Vertrag oder Fotos hier ablegen, bis 25 MB pro Datei.</p>`
+      : files.map((f) => html`<div class="file-row" key=${f.name}>
+        <button type="button" class="file-open" onClick=${() => open(f)}><${Icon} n="file" /><span class="ell">${fileLabel(f.name)}</span></button>
+        <span class="muted small">${fileSize(f.metadata?.size || 0)} · ${shortDate(f.created_at)}</span>
+        ${!isGuest && html`<button type="button" class="btn ghost xs danger" onClick=${() => del(f)}>Löschen</button>`}
+      </div>`)}
+  </section>`;
+}
+
 // Verlaufseintrag als Satz
 function historyText(e, idx) {
   const d = e.detail;
@@ -1280,6 +1343,8 @@ function historyText(e, idx) {
     case 'projekt': return `hat sie ins Projekt „${d}“ verschoben`;
     case 'archiv': return d === 'ja' ? 'hat sie archiviert' : 'hat sie wiederhergestellt';
     case 'notiz': return 'hat eine Notiz geschrieben';
+    case 'erwaehnung': return `hat ${idx.userName.get((d || '').toLowerCase()) || d} erwähnt`;
+    case 'datei': return `hat „${d}“ hochgeladen`;
     default: return e.kind;
   }
 }
@@ -1449,6 +1514,7 @@ function CardSheet({ id, query }) {
           <span class="muted">${fullDate(e.at)}</span> <strong>${!e.actor ? 'System' : e.actor.toLowerCase() === me ? 'Du' : idx.userName.get(e.actor.toLowerCase()) || e.actor}</strong> ${historyText(e, idx)}</div>`)}
       </details>`}
     </form>
+    ${card && html`<${FilesPanel} card=${card} />`}
     ${card && html`<${NotesPanel} filter=${{ card_id: card.id }}
       defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
   <//>`;
@@ -1485,7 +1551,8 @@ function GuestHome() {
   const { cards, idx, users, me, project_shares } = useApp();
   const list = cards.filter((c) => !c.archived).sort(byUpdatedDesc);
   const owners = users.filter((u) => u.role === 'owner').map((u) => u.name).join(', ');
-  const mine = list.filter((c) => c.assignee && c.assignee.toLowerCase() === me && stageKind(idx.stage.get(c.stage_id)) !== 'done');
+  const mine = list.filter((c) => idx.mentionedMe(c)
+    || (c.assignee && c.assignee.toLowerCase() === me && stageKind(idx.stage.get(c.stage_id)) !== 'done'));
   const fullProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
   const byProject = new Map();
   list.forEach((c) => {
@@ -1521,12 +1588,35 @@ function GuestHome() {
 // ---------------------------------------------------------------------------
 // Notizen
 // ---------------------------------------------------------------------------
+// @Erwähnungen: „@Vorname“ oder „@Vorname Nachname“ eines CRM-Nutzers
+const escapeRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function mentionPattern(u) {
+  const full = u.name.trim();
+  const first = full.split(/\s+/)[0];
+  return new RegExp(`@(${escapeRe(full)}|${escapeRe(first)})(?![\\p{L}])`, 'iu');
+}
+function findMentions(text, users, me) {
+  return users.filter((u) => u.email !== me && mentionPattern(u).test(text)).map((u) => u.email);
+}
+// Erwähnungen in einer (schon bereinigten) Notiz hervorheben
+function highlightMentions(htmlText, users) {
+  return users.reduce((out, u) => out.replace(new RegExp(mentionPattern(u).source, 'giu'),
+    (m) => `<span class="mention">${m}</span>`), htmlText);
+}
+
 function NotesPanel({ filter, defaults }) {
-  const { actions, isMobile, isGuest } = useApp();
+  const { actions, isMobile, isGuest, users, me, idx } = useApp();
   const [notes, setNotes] = useState(null);
   const [text, setText] = useState('');
   const [priv, setPriv] = useState(false);
   const [busy, setBusy] = useState(false);
+  const textRef = useRef(null);
+  const others = users.filter((u) => u.email !== me);
+  const insertMention = (u) => {
+    const tag = `@${u.name.split(/\s+/)[0]} `;
+    setText((t) => (t && !/\s$/.test(t) ? `${t} ${tag}` : `${t}${tag}`));
+    textRef.current?.focus();
+  };
   const key = JSON.stringify(filter);
 
   useEffect(() => {
@@ -1544,10 +1634,22 @@ function NotesPanel({ filter, defaults }) {
     if (!text.trim()) return;
     setBusy(true);
     try {
-      const n = await db.insert('notes', { ...defaults, content: textToHtml(text), source: 'manual', private: !isGuest && priv });
+      const isPrivate = !isGuest && priv;
+      // Notizen mit Schloss erwähnen niemanden, die sieht ja nur der Eigentümer
+      const mentions = filter.card_id && !isPrivate ? findMentions(text, users, me) : [];
+      const n = await db.insert('notes', { ...defaults, content: textToHtml(text), source: 'manual', private: isPrivate, mentions });
       setNotes((l) => [n, ...(l || [])]);
       setText('');
       setPriv(false);
+      // Wird ein Gast erwähnt, der die Karte nicht sieht, bekommt er sie geteilt
+      const card = idx.card.get(filter.card_id);
+      for (const email of mentions) {
+        const u = users.find((x) => x.email === email);
+        if (card && !isGuest && u?.role === 'gast' && !idx.visibleFor(card, email)) {
+          await actions.save('card_shares', { card_id: card.id, email });
+          actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
+        }
+      }
       actions.touched(defaults);
     } catch (err) { actions.fail(err); } finally { setBusy(false); }
   }
@@ -1563,8 +1665,13 @@ function NotesPanel({ filter, defaults }) {
   return html`<section class="notes">
     <h3>Notizen ${notes && html`<span class="count">${notes.length}</span>`}</h3>
     <form class="note-new" onSubmit=${add}>
-      <textarea rows="3" placeholder="Notiz schreiben …" value=${text} onInput=${(e) => setText(e.target.value)}
+      <textarea ref=${textRef} rows="3" placeholder=${filter.card_id && others.length ? 'Notiz schreiben … mit @Name erwähnst du jemanden' : 'Notiz schreiben …'}
+        value=${text} onInput=${(e) => setText(e.target.value)}
         onKeyDown=${(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) add(e); }}></textarea>
+      ${filter.card_id && others.length > 0 && html`<div class="mention-row">
+        <span class="muted small">Erwähnen:</span>
+        ${others.map((u) => html`<button type="button" key=${u.email} class="chip" onClick=${() => insertMention(u)}>@${u.name.split(/\s+/)[0]}</button>`)}
+      </div>`}
       <div class="note-new-actions">
         ${!isGuest && filter.card_id && html`<label class="check-line small" title="Gäste, mit denen die Karte geteilt ist, sehen diese Notiz nicht">
           <input type="checkbox" checked=${priv} onChange=${(e) => setPriv(e.target.checked)} /><${Icon} n="lock" />Nur für mich</label>`}
@@ -1579,13 +1686,13 @@ function NotesPanel({ filter, defaults }) {
 }
 
 function NoteItem({ note, showCard, onSave, onDelete }) {
-  const { idx, actions, isGuest, me } = useApp();
+  const { idx, actions, isGuest, me, users } = useApp();
   const author = note.author && note.author.toLowerCase() !== me ? idx.userName.get(note.author.toLowerCase()) || note.author : null;
   const mine = !note.author || note.author.toLowerCase() === me;
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState('');
-  const clean = useMemo(() => sanitize(note.content), [note.content]);
+  const clean = useMemo(() => highlightMentions(sanitize(note.content), users), [note.content, users]);
   const long = clean.length > 700;
   const card = showCard && note.card_id ? idx.card.get(note.card_id) : null;
 

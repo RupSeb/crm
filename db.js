@@ -146,6 +146,25 @@ const remote = {
     const c = await client();
     return check(await c.from(table).upsert(row, { onConflict }).select().single());
   },
+  // Dateien im privaten Storage-Bucket „dateien“, Pfad karten/<id>/<datei>
+  async listFiles(prefix) {
+    const c = await client();
+    const list = check(await c.storage.from('dateien').list(prefix, { limit: 200, sortBy: { column: 'created_at', order: 'desc' } }));
+    return list.filter((f) => f.id && f.name !== '.emptyFolderPlaceholder');
+  },
+  async uploadFile(path, file) {
+    const c = await client();
+    check(await c.storage.from('dateien').upload(path, file, { contentType: file.type || 'application/octet-stream' }));
+  },
+  // Kurzlebiger Link (10 Minuten), der Bucket selbst ist nicht öffentlich
+  async fileUrl(path) {
+    const c = await client();
+    return check(await c.storage.from('dateien').createSignedUrl(path, 600)).signedUrl;
+  },
+  async removeFile(path) {
+    const c = await client();
+    check(await c.storage.from('dateien').remove([path]));
+  },
   async remove(table, id) {
     const c = await client();
     check(await c.from(table).delete().eq('id', id));
@@ -187,6 +206,8 @@ function touch(table, id) {
   if (r) r.updated_at = now();
 }
 
+const demoFiles = new Map();
+
 // Verlauf wie die Trigger in supabase/05_team.sql
 const CARD_LOG = [['stage_id', 'spalte'], ['priority', 'dringlichkeit'], ['due_date', 'faellig'], ['assignee', 'zustaendig'],
   ['title', 'titel'], ['project_id', 'projekt'], ['archived', 'archiv']];
@@ -218,11 +239,21 @@ const demo = {
   async mfaEnroll() { return { factorId: 'demo', qr: '', secret: 'DEMO', uri: '' }; },
   async mfaVerify() {},
   async mfaRemoveOthers() {},
-  async rpc(fn) {
+  async rpc(fn, args = {}) {
     if (fn === 'my_role') return DEMO_GUEST ? 'gast' : 'owner';
     if (fn === 'crm_users') return DEMO_USERS;
+    if (fn === 'log_file') { logDemo(args.cid, 'datei', args.fname); persist(); }
     return null;
   },
+  // Dateien nur im Speicher dieses Tabs
+  async listFiles(prefix) {
+    return [...demoFiles.entries()].filter(([path]) => path.startsWith(prefix + '/'))
+      .map(([path, f]) => ({ id: path, name: path.slice(prefix.length + 1), created_at: f.created_at, metadata: { size: f.file.size } }))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  },
+  async uploadFile(path, file) { demoFiles.set(path, { file, created_at: now() }); },
+  async fileUrl(path) { return URL.createObjectURL(demoFiles.get(path).file); },
+  async removeFile(path) { demoFiles.delete(path); },
   async signOut() {
     try { localStorage.removeItem(KEY); } catch { /* egal */ }
     location.reload();
@@ -255,7 +286,10 @@ const demo = {
     if (table === 'notes') {
       touch('cards', r.card_id);
       touch('persons', r.person_id);
-      if (r.card_id && !r.private) logDemo(r.card_id, 'notiz');
+      if (r.card_id && !r.private) {
+        logDemo(r.card_id, 'notiz');
+        (r.mentions || []).forEach((m) => logDemo(r.card_id, 'erwaehnung', m.toLowerCase()));
+      }
     }
     if (table === 'cards') logDemo(r.id, 'angelegt');
     persist();

@@ -335,6 +335,25 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .history .hist-row:last-child { border-bottom: 0; }
 .mini-card .badges { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 
+/* Erwähnungen */
+.mention { color: var(--gold-l); font-weight: 600; background: var(--accent-soft); border-radius: 4px; padding: 0 3px; }
+.badge.mention-badge { background: var(--gold); color: var(--accent-ink); font-weight: 600; }
+.mention-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.mention-row .chip { cursor: pointer; }
+
+/* Dateien am Deal */
+.files { margin: 18px 0 6px; }
+.files h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 15px; }
+.files h3 .btn { margin-left: auto; cursor: pointer; }
+.files .btn.disabled { opacity: 0.6; pointer-events: none; }
+.file-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.file-row:last-child { border-bottom: 0; }
+.file-open {
+  display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 0; border: 0;
+  background: none; color: var(--gold-l); font: 500 14px var(--font); text-align: left; cursor: pointer;
+}
+.file-open .ico { width: 16px; height: 16px; flex: none; }
+
 /* Kalender: Wochenansicht wie Google Kalender */
 .cal-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .cal-toolbar .icon-btn { width: 34px; height: 34px; border-radius: 50%; }
