@@ -85,6 +85,14 @@ const remote = {
     const c = await client();
     check(await c.auth.mfa.challengeAndVerify({ factorId, code }));
   },
+  // Nach einem neu bestätigten Faktor alle anderen entfernen (geht nur mit zweitem Faktor angemeldet)
+  async mfaRemoveOthers(keepId) {
+    const c = await client();
+    const f = check(await c.auth.mfa.listFactors());
+    for (const x of (f.all || []).filter((x) => x.id !== keepId)) {
+      check(await c.auth.mfa.unenroll({ factorId: x.id }));
+    }
+  },
   async signOut() {
     const c = await client();
     await c.auth.signOut();
@@ -173,6 +181,7 @@ const demo = {
   async mfaState() { return { current: 'aal2', verified: [{ id: 'demo' }] }; },
   async mfaEnroll() { return { factorId: 'demo', qr: '', secret: 'DEMO', uri: '' }; },
   async mfaVerify() {},
+  async mfaRemoveOthers() {},
   async signOut() {
     try { localStorage.removeItem(KEY); } catch { /* egal */ }
     location.reload();

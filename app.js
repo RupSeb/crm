@@ -246,7 +246,9 @@ function App() {
       })
       .catch(() => { if (alive) setMfa({ step: 'ok' }); });
     return () => { alive = false; };
-  }, [session ? (session.access_token || session.user?.email || 'sitzung') : null, recovery]);
+    // Nur bei Wechsel des Nutzers neu prüfen. Am Token hängen hieße: bei jeder
+    // stündlichen Erneuerung und nach neuem Faktor lädt die ganze App neu.
+  }, [session ? (session.user?.id || session.user?.email || 'sitzung') : null, recovery]);
 
   if (session === undefined) return html`<div class="boot">Lädt …</div>`;
   if (!session || recovery) {
@@ -259,45 +261,79 @@ function App() {
   return html`<${Main} session=${session} />`;
 }
 
-// Zweiter Faktor: einmal einrichten (QR-Code oder Link fürs iPhone), danach bei jeder Anmeldung den Code
-function MfaScreen({ step, factorId, onDone }) {
+// Feld für den 6-stelligen Code mit Bestätigen-Knopf
+function CodeField({ code, setCode, busy }) {
+  return html`<label class="field"><span>Code aus der App</span>
+      <input class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required
+        value=${code} onInput=${(e) => setCode(e.target.value.replace(/\D/g, ''))} /></label>
+    <button class="btn primary full" disabled=${busy || code.length !== 6}>${busy ? 'Prüfe …' : 'Bestätigen'}</button>`;
+}
+
+// Neuen zweiten Faktor einrichten: Link fürs iPhone, QR-Code oder Schlüssel zum
+// Kopieren (NordPass und andere Passwort-Manager). onDone bekommt die Faktor-ID.
+function MfaSetup({ onDone }) {
   const [setup, setSetup] = useState(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  useEffect(() => {
-    if (step === 'enroll') db.mfaEnroll().then(setSetup).catch((e) => setMsg(friendly(e)));
-  }, [step]);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { db.mfaEnroll().then(setSetup).catch((e) => setMsg(friendly(e))); }, []);
 
   async function submit(e) {
     e.preventDefault();
     setBusy(true); setMsg('');
     try {
-      await db.mfaVerify(step === 'enroll' ? setup.factorId : factorId, code.trim());
+      await db.mfaVerify(setup.factorId, code.trim());
+      await onDone(setup.factorId);
+    } catch (err) { setMsg(friendly(err)); setCode(''); } finally { setBusy(false); }
+  }
+  async function copy() {
+    try { await navigator.clipboard.writeText(setup.secret); setCopied(true); } catch { setCopied(false); }
+  }
+
+  return html`<form class="form" onSubmit=${submit}>
+    ${!setup ? html`<p class="muted small">${msg ? '' : 'Lädt …'}</p>` : html`
+      <p class="small"><strong>Passwort-Manager (z. B. NordPass):</strong> Schlüssel kopieren und im Eintrag fürs CRM als Zwei-Faktor-Code (2FA) einfügen.</p>
+      <div class="mfa-key">
+        <code class="mfa-secret">${setup.secret}</code>
+        <button type="button" class="btn sm" onClick=${copy}>${copied ? 'Kopiert' : 'Kopieren'}</button>
+      </div>
+      <p class="small"><strong>iPhone ohne Passwort-Manager:</strong> <a href=${setup.uri}>hier tippen</a> und „Code hinzufügen“ bestätigen, dann liegt der Code in „Passwörter“.</p>
+      <details class="more"><summary>QR-Code zum Scannen</summary>
+        <img class="mfa-qr" src=${setup.qr} alt="QR-Code für die Authenticator-App" /></details>
+      <p class="muted small">Danach den ersten Code aus der App hier eingeben.</p>
+      <${CodeField} code=${code} setCode=${setCode} busy=${busy} />`}
+    ${msg && html`<p class="form-error" role="alert">${msg}</p>`}
+  </form>`;
+}
+
+// Zweiter Faktor bei der Anmeldung: einmal einrichten, danach jedes Mal den Code
+function MfaScreen({ step, factorId, onDone }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setMsg('');
+    try {
+      await db.mfaVerify(factorId, code.trim());
       onDone();
     } catch (err) { setMsg(friendly(err)); setCode(''); } finally { setBusy(false); }
   }
 
-  const ready = step === 'challenge' || setup;
   return html`<div class="login-wrap">
     <div class="login-card">
       <div class="brand"><${BrandMark} />${APP_NAME}</div>
-      <form class="form" onSubmit=${submit}>
-        <h1 class="login-title">${step === 'enroll' ? 'Zwei-Faktor einrichten' : 'Bestätigungscode'}</h1>
-        ${step === 'enroll' ? html`
-          <p class="muted small">Zum Schutz deiner Daten fragt das CRM nach dem Passwort zusätzlich einen 6-stelligen Code ab. Den erzeugt eine Authenticator-App.</p>
-          ${setup && html`
-            <p class="small"><strong>Auf dem iPhone:</strong> <a href=${setup.uri}>hier tippen</a> und „Code hinzufügen“ bestätigen. Das iPhone speichert ihn in „Passwörter“.</p>
-            <p class="small"><strong>Am Rechner:</strong> den QR-Code mit dem iPhone (Kamera) oder einer Authenticator-App scannen.</p>
-            <img class="mfa-qr" src=${setup.qr} alt="QR-Code für die Authenticator-App" />
-            <details class="more"><summary>Code lieber abtippen</summary><code class="mfa-secret">${setup.secret}</code></details>`}`
-    : html`<p class="muted small">Gib den aktuellen 6-stelligen Code aus deiner Authenticator-App ein.</p>`}
-        ${ready && html`<label class="field"><span>Code aus der App</span>
-          <input class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required
-            value=${code} onInput=${(e) => setCode(e.target.value.replace(/\D/g, ''))} /></label>
-          <button class="btn primary full" disabled=${busy || code.length !== 6}>${busy ? 'Prüfe …' : 'Bestätigen'}</button>`}
+      <h1 class="login-title">${step === 'enroll' ? 'Zwei-Faktor einrichten' : 'Bestätigungscode'}</h1>
+      ${step === 'enroll' ? html`
+        <p class="muted small">Zum Schutz deiner Daten fragt das CRM nach dem Passwort zusätzlich einen 6-stelligen Code ab. Den erzeugt dein Passwort-Manager oder eine Authenticator-App.</p>
+        <${MfaSetup} onDone=${onDone} />`
+    : html`<form class="form" onSubmit=${submit}>
+        <p class="muted small">Gib den aktuellen 6-stelligen Code aus deinem Passwort-Manager oder deiner Authenticator-App ein.</p>
+        <${CodeField} code=${code} setCode=${setCode} busy=${busy} />
       </form>
-      ${msg && html`<p class="form-error" role="alert">${msg}</p>`}
+      ${msg && html`<p class="form-error" role="alert">${msg}</p>`}`}
       <div class="login-links"><button type="button" class="btn link sm" onClick=${() => db.signOut()}>Abmelden</button></div>
     </div>
   </div>`;
@@ -652,8 +688,15 @@ function applyTheme(key) {
 }
 
 function SettingsSheet({ onLogout }) {
-  const { session } = useApp();
+  const { session, actions } = useApp();
   const [theme, setTheme] = useState(ls.get('crm-theme') || '');
+  const [newFactor, setNewFactor] = useState(false);
+  // Neuer Faktor bestätigt: alle älteren Faktoren entfernen, ihre Codes gelten dann nicht mehr
+  async function factorDone(factorId) {
+    await db.mfaRemoveOthers(factorId);
+    setNewFactor(false);
+    actions.notify('Neuer zweiter Faktor aktiv. Alte Codes gelten nicht mehr.');
+  }
   const pick = (key) => {
     setTheme(key);
     ls.set('crm-theme', key);
@@ -674,6 +717,14 @@ function SettingsSheet({ onLogout }) {
         <div class="form-actions">
           <button type="button" class="btn" onClick=${onLogout}>${DEMO ? 'Demo zurücksetzen' : 'Abmelden'}</button>
         </div>
+      </div>
+      <div class="field"><span>Zwei-Faktor</span>
+        ${newFactor ? html`
+          <p class="muted small">Neuen Faktor einrichten. Bis du den ersten Code bestätigst, gilt der bisherige weiter.</p>
+          <${MfaSetup} onDone=${factorDone} />
+          <div class="form-actions"><button type="button" class="btn link sm" onClick=${() => setNewFactor(false)}>Abbrechen</button></div>`
+        : html`<p class="muted small">Für einen anderen Passwort-Manager, ein neues Handy oder wenn der alte Code weg ist.</p>
+          <div class="form-actions"><button type="button" class="btn" onClick=${() => setNewFactor(true)}>Zweiten Faktor neu einrichten</button></div>`}
       </div>
     </section>
   <//>`;
