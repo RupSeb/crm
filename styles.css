@@ -539,8 +539,12 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
   display: flex; flex-direction: column; min-height: calc(100dvh - 200px);
   background: var(--col-bg); border-radius: 14px; padding: 8px; border: 2px solid transparent;
 }
-.col-name { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.col-name:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.col-name {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.col-name .ico { width: 13px; height: 13px; flex: none; opacity: 0.4; }
+.col-name:hover .ico { opacity: 1; }
 .col-add {
   width: 44px; display: grid; justify-items: center; align-content: start; padding-top: 12px;
   border: 2px dashed var(--border); border-radius: 14px; background: none; color: var(--muted); cursor: pointer;
@@ -737,6 +741,7 @@ details.more[open] summary { margin-bottom: 12px; }
   background: var(--surface); border-bottom: 1px solid var(--border);
 }
 .sheet-head h2 { margin: 0; font-size: 16px; }
+.sheet-head .head-action { margin-left: auto; }
 .sheet-body { display: flex; flex-direction: column; gap: 22px; padding: 18px; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { transform: translateY(12px); opacity: 0; } }

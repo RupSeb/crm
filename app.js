@@ -209,6 +209,7 @@ const ICONS = {
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
   video: '<rect x="3" y="6" width="12.5" height="12" rx="2"/><path d="M15.5 10.5l5.5-3.5v10l-5.5-3.5"/>',
+  edit: '<path d="M4 20h4L18.5 9.5a2.1 2.1 0 00-3-3L5 17v3z"/><path d="M13.5 8.5l2 2"/>',
 };
 function Icon({ n }) {
   return html`<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -804,9 +805,14 @@ function Main({ session }) {
 // ---------------------------------------------------------------------------
 // Bausteine
 // ---------------------------------------------------------------------------
-function Sheet({ title, onClose, children }) {
+// Schließt nur über den Zurück-Pfeil oder Escape, nicht per Klick daneben, damit nichts Angefangenes verloren geht.
+// „action“ steht oben rechts im Kopf (z. B. Speichern).
+function Sheet({ title, onClose, action, children }) {
+  // Escape soll immer das aktuelle onClose nehmen, nicht das vom ersten Anzeigen
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e) => { if (e.key === 'Escape') closeRef.current(); };
     addEventListener('keydown', onKey);
     document.body.classList.add('noscroll');
     return () => {
@@ -814,11 +820,12 @@ function Sheet({ title, onClose, children }) {
       document.body.classList.remove('noscroll');
     };
   }, []);
-  return html`<div class="overlay" onMouseDown=${(e) => { if (e.target === e.currentTarget) onClose(); }}>
+  return html`<div class="overlay">
     <div class="sheet" role="dialog" aria-modal="true" aria-label=${title}>
       <div class="sheet-head">
         <button class="icon-btn" onClick=${onClose} aria-label="Schließen"><${Icon} n="back" /></button>
         <h2>${title}</h2>
+        ${action && html`<div class="head-action">${action}</div>`}
       </div>
       <div class="sheet-body">${children}</div>
     </div>
@@ -1364,7 +1371,7 @@ function Board({ projectId }) {
           onDragLeave=${(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(null); }}
           onDrop=${(e) => { e.preventDefault(); setOver(null); move(Number(e.dataTransfer.getData('text/plain')), s.id); }}>
         <header class="col-head">
-          ${editCols ? html`<button type="button" class="col-name" onClick=${() => editStage(s)} title="Spalte umbenennen oder löschen">${s.name}</button>`
+          ${editCols ? html`<button type="button" class="col-name" onClick=${() => editStage(s)} title="Spalte umbenennen oder löschen">${s.name}<${Icon} n="edit" /></button>`
             : html`<span>${s.name}</span>`}<span class="count">${byStage.get(s.id).length}</span>
           <a class="icon-btn" href=${newHref(s)} title="Aufgabe hinzufügen" aria-label="Aufgabe hinzufügen"><${Icon} n="plus" /></a>
         </header>
@@ -1530,10 +1537,12 @@ function CardSheet({ id, query }) {
   });
   const [busy, setBusy] = useState(false);
   const titleRef = useRef(null);
+  // Angefangene Notiz im NotesPanel, damit „Speichern“ oben sie mitnimmt
+  const noteRef = useRef(null);
   useEffect(() => { if (isNew) titleRef.current?.focus(); }, []);
   // Öffnen zählt als gesehen, damit „Neu“ verschwindet
   useEffect(() => { if (card) actions.markSeen(card.id); }, [card?.id]);
-  const close = () => back(isGuest ? '#/geteilt' : card ? `#/board/${card.project_id}` : '#/board');
+  const close = () => back(isGuest ? '#/geteilt' : card ? `#/board/${card.project_id}` : `#/board/${form.project_id}`);
 
   if (!isNew && !card) {
     return html`<${Sheet} title="Aufgabe" onClose=${close}><p class="muted">Diese Aufgabe gibt es nicht mehr.</p><//>`;
@@ -1566,6 +1575,21 @@ function CardSheet({ id, query }) {
       const saved = await actions.save('cards', { ...(card ? { id: card.id } : {}), ...form, title: form.title.trim() });
       if (!card) go(`#/karte/${saved.id}`, true);
     } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
+  }
+  // „Speichern“ oben rechts: Aufgabe und angefangene Notiz sichern, dann schließen. Geht etwas schief, bleibt das Fenster offen.
+  async function saveAll() {
+    if (!form.title.trim()) return;
+    setBusy(true);
+    try {
+      if (dirty) await actions.save('cards', { ...(card ? { id: card.id } : {}), ...form, title: form.title.trim() });
+      if (noteRef.current?.pending() && !(await noteRef.current.save())) return;
+      close();
+    } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
+  }
+  // Zurück-Pfeil und Escape: Ungespeichertes nur nach Rückfrage verwerfen
+  function leave() {
+    const unsaved = (card ? dirty : !!form.title.trim()) || !!noteRef.current?.pending();
+    if (!unsaved || confirm('Ungespeicherte Änderungen verwerfen?')) close();
   }
   async function archive() {
     try { await actions.save('cards', { id: card.id, archived: !card.archived }); } catch { /* fail */ }
@@ -1606,7 +1630,9 @@ function CardSheet({ id, query }) {
   const person = idx.person.get(form.person_id);
   const org = idx.org.get(form.org_id);
 
-  return html`<${Sheet} title=${isNew ? 'Neue Aufgabe' : 'Aufgabe'} onClose=${close}>
+  const saveTop = html`<button type="button" class="btn primary sm" disabled=${busy || !form.title.trim()} onClick=${saveAll}
+    title="Aufgabe und angefangene Notiz speichern und schließen">Speichern</button>`;
+  return html`<${Sheet} title=${isNew ? 'Neue Aufgabe' : 'Aufgabe'} onClose=${leave} action=${saveTop}>
     <form class="form" onSubmit=${submit}>
       ${card?.archived && html`<div class="notice">Diese Aufgabe ist archiviert und erscheint nicht auf dem Board.</div>`}
       ${isGuest && !isNew ? html`<h2 class="ev-sheet-title">${form.title}</h2>
@@ -1673,7 +1699,7 @@ function CardSheet({ id, query }) {
       </details>`}
     </form>
     ${card && html`<${FilesPanel} card=${card} />`}
-    ${card && html`<${NotesPanel} filter=${{ card_id: card.id }}
+    ${card && html`<${NotesPanel} filter=${{ card_id: card.id }} pendingRef=${noteRef}
       defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
     ${mailPeople.length > 0 && html`<${EmailsPanel} personIds=${mailPeople} />`}
   <//>`;
@@ -1763,7 +1789,7 @@ function highlightMentions(htmlText, users) {
     (m) => `<span class="mention">${m}</span>`), htmlText);
 }
 
-function NotesPanel({ filter, defaults }) {
+function NotesPanel({ filter, defaults, pendingRef }) {
   const { actions, isMobile, isGuest, users, me, idx } = useApp();
   const [notes, setNotes] = useState(null);
   const [text, setText] = useState('');
@@ -1788,9 +1814,10 @@ function NotesPanel({ filter, defaults }) {
     return () => { alive = false; };
   }, [key]);
 
+  // Gibt zurück, ob gespeichert wurde (für „Speichern“ oben in der Karte)
   async function add(e) {
-    e.preventDefault();
-    if (!text.trim()) return;
+    e?.preventDefault();
+    if (!text.trim()) return true;
     setBusy(true);
     try {
       const isPrivate = !isGuest && priv;
@@ -1811,8 +1838,10 @@ function NotesPanel({ filter, defaults }) {
         }
       }
       actions.touched(defaults);
-    } catch (err) { actions.fail(err); } finally { setBusy(false); }
+      return true;
+    } catch (err) { actions.fail(err); return false; } finally { setBusy(false); }
   }
+  if (pendingRef) pendingRef.current = { pending: () => !!text.trim(), save: () => add() };
   async function update(note, fields) {
     const n = await db.update('notes', note.id, typeof fields === 'string' ? { content: fields } : fields);
     setNotes((l) => l.map((x) => (x.id === n.id ? n : x)));
