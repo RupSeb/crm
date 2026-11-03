@@ -171,6 +171,7 @@ function htmlToText(h) {
 function friendly(err) {
   const m = String(err?.message || err);
   if (/invalid login credentials/i.test(m)) return 'E-Mail oder Passwort stimmt nicht.';
+  if (/insufficient_aal|aal2 session is required/i.test(m)) return 'Bitte zuerst den Code aus deiner Authenticator-App bestätigen. Lade die Seite neu, dann kommt das Feld dafür.';
   if (/totp|invalid.*code|code.*invalid|mfa/i.test(m)) return 'Der Code stimmt nicht. Bitte den aktuellen Code aus der App eingeben.';
   if (/email not confirmed/i.test(m)) return 'Bitte zuerst den Link in der Bestätigungsmail anklicken.';
   if (/already registered|already exists/i.test(m)) return 'Für diese E-Mail gibt es schon ein Konto. Bitte anmelden.';
@@ -240,7 +241,9 @@ function App() {
   }, []);
   useEffect(() => {
     setMfa(null);
-    if (!session || recovery) return undefined;
+    // Auch beim Zurücksetzen prüfen: Mit eingerichtetem zweitem Faktor nimmt Supabase ein neues Passwort
+    // erst nach dem Code an („AAL2 session is required to update email or password when MFA is enabled“)
+    if (!session) return undefined;
     let alive = true;
     db.mfaState()
       .then((s) => {
@@ -256,10 +259,16 @@ function App() {
   }, [session ? (session.user?.id || session.user?.email || 'sitzung') : null, recovery]);
 
   if (session === undefined) return html`<div class="boot">Lädt …</div>`;
-  if (!session || recovery) {
-    return html`<${Login} start=${recovery ? 'newpass' : 'login'} onDone=${(s) => { setRecovery(false); setSession(s); }} />`;
-  }
+  const loginDone = (s) => { setRecovery(false); setSession(s); };
+  if (!session) return html`<${Login} start="login" onDone=${loginDone} />`;
   if (!mfa) return html`<div class="boot">Lädt …</div>`;
+  // Neues Passwort: erst der Code (falls ein Faktor eingerichtet ist), dann das Passwort,
+  // ohne Faktor erst das Passwort und danach die Einrichtung
+  if (mfa.step === 'challenge') {
+    return html`<${MfaScreen} step=${mfa.step} factorId=${mfa.factorId} onDone=${() => setMfa({ step: 'ok' })}
+      note=${recovery ? 'Zum Festlegen des neuen Passworts zuerst den Code aus deiner Authenticator-App eingeben.' : ''} />`;
+  }
+  if (recovery) return html`<${Login} start="newpass" onDone=${loginDone} />`;
   if (mfa.step !== 'ok') {
     return html`<${MfaScreen} step=${mfa.step} factorId=${mfa.factorId} onDone=${() => setMfa({ step: 'ok' })} />`;
   }
@@ -359,7 +368,7 @@ function MfaSetup({ onDone }) {
 }
 
 // Zweiter Faktor bei der Anmeldung: einmal einrichten, danach jedes Mal den Code
-function MfaScreen({ step, factorId, onDone }) {
+function MfaScreen({ step, factorId, onDone, note = '' }) {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -381,7 +390,7 @@ function MfaScreen({ step, factorId, onDone }) {
         <p class="muted small">Zum Schutz deiner Daten fragt das CRM nach dem Passwort zusätzlich einen 6-stelligen Code ab. Den erzeugt dein Passwort-Manager oder eine Authenticator-App.</p>
         <${MfaSetup} onDone=${onDone} />`
     : html`<form class="form" onSubmit=${submit}>
-        <p class="muted small">Gib den aktuellen 6-stelligen Code aus deinem Passwort-Manager oder deiner Authenticator-App ein.</p>
+        <p class="muted small">${note || 'Gib den aktuellen 6-stelligen Code aus deinem Passwort-Manager oder deiner Authenticator-App ein.'}</p>
         <${CodeField} code=${code} setCode=${setCode} busy=${busy} />
       </form>
       ${msg && html`<p class="form-error" role="alert">${msg}</p>`}`}
