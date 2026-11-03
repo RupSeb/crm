@@ -1,6 +1,6 @@
-﻿// Service Worker: hÃ¤lt die App-Dateien vor, damit sie schnell startet und
+// Service Worker: hält die App-Dateien vor, damit sie schnell startet und
 // auch ohne Netz aufgeht. Immer zuerst das Netz fragen, damit Updates sofort
-// ankommen. Datenbank-Anfragen (andere Domain) laufen nie Ã¼ber den Cache.
+// ankommen. Datenbank-Anfragen (andere Domain) laufen nie über den Cache.
 const CACHE = 'crm-v18';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'demo.js', 'config.js',
