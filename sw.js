@@ -1,7 +1,7 @@
 // Service Worker: hält die App-Dateien vor, damit sie schnell startet und
 // auch ohne Netz aufgeht. Immer zuerst das Netz fragen, damit Updates sofort
 // ankommen. Datenbank-Anfragen (andere Domain) laufen nie über den Cache.
-const CACHE = 'crm-v16';
+const CACHE = 'crm-v17';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'demo.js', 'config.js',
   'manifest.webmanifest', 'vendor/preact-htm.js', 'vendor/purify.js', 'vendor/supabase.js',

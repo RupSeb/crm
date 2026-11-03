@@ -36,6 +36,20 @@ function check({ data, error }) {
   return data;
 }
 
+// Anmeldeserver direkt ansprechen, die eingebundene supabase.js kennt die OAuth-Freigabe noch nicht
+async function oauthCall(method, path, body) {
+  const c = await client();
+  const session = check(await c.auth.getSession()).session;
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/oauth/${path}`, {
+    method,
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.msg || data.message || data.error_description || `Fehler ${res.status}`);
+  return data;
+}
+
 const remote = {
   async session() {
     const c = await client();
@@ -101,6 +115,14 @@ const remote = {
   async rpc(fn, args = {}) {
     const c = await client();
     return check(await c.rpc(fn, args));
+  },
+  // Freigabe für Claude: Supabase ist der Anmeldeserver, diese Seite fragt nur nach Erlaubnis
+  async oauthDetails(id) {
+    return oauthCall('GET', `authorizations/${encodeURIComponent(id)}`);
+  },
+  async oauthDecide(id, approve) {
+    const d = await oauthCall('POST', `authorizations/${encodeURIComponent(id)}/consent`, { action: approve ? 'approve' : 'deny' });
+    return d.redirect_url;
   },
   async list(table, filter = {}, columns = '*') {
     const c = await client();
@@ -239,6 +261,8 @@ const demo = {
   async mfaEnroll() { return { factorId: 'demo', qr: '', secret: 'DEMO', uri: '' }; },
   async mfaVerify() {},
   async mfaRemoveOthers() {},
+  async oauthDetails() { return { client: { name: 'Claude' }, redirect_uri: 'https://claude.ai/api/mcp/auth_callback' }; },
+  async oauthDecide() { return location.pathname + location.search; },
   async rpc(fn, args = {}) {
     if (fn === 'my_role') return DEMO_GUEST ? 'gast' : 'owner';
     if (fn === 'crm_users') return DEMO_USERS;

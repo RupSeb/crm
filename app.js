@@ -226,6 +226,7 @@ function BrandMark() {
 // Start und Anmeldung
 // ---------------------------------------------------------------------------
 function App() {
+  const route = useRoute();
   const [session, setSession] = useState(undefined);
   const [recovery, setRecovery] = useState(false);
   // Zwei-Faktor: null = wird geprüft, sonst { step: 'ok' | 'enroll' | 'challenge', factorId }
@@ -262,7 +263,53 @@ function App() {
   if (mfa.step !== 'ok') {
     return html`<${MfaScreen} step=${mfa.step} factorId=${mfa.factorId} onDone=${() => setMfa({ step: 'ok' })} />`;
   }
+  if (route.parts[0] === 'claude-freigabe') {
+    return html`<${ClaudeConsent} id=${route.query.get('authorization_id')} session=${session} />`;
+  }
   return html`<${Main} session=${session} />`;
+}
+
+// Freigabe für Claude: Wer den CRM-Connector in Claude verbindet, landet nach der Anmeldung
+// hier und erlaubt den Zugriff. Claude darf danach genau das, was die Person in der App darf.
+function ClaudeConsent({ id, session }) {
+  const [info, setInfo] = useState(null);
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!id) { setMsg('Der Link ist unvollständig. Bitte die Verbindung in Claude neu starten.'); return; }
+    db.oauthDetails(id)
+      .then((d) => { if (d.redirect_url) location.replace(d.redirect_url); else setInfo(d); })
+      .catch((e) => setMsg(friendly(e)));
+  }, [id]);
+
+  async function decide(approve) {
+    setBusy(true); setMsg('');
+    try {
+      // Die Freigabe mit zweitem Faktor macht die Sitzung von Claude erst gültig (supabase/08_claude_online.sql)
+      if (approve) await db.rpc('claude_freigeben', { auth_id: id, cid: info.client?.id || info.client?.client_id || '' });
+      location.replace(await db.oauthDecide(id, approve));
+    } catch (e) { setMsg(friendly(e)); setBusy(false); }
+  }
+
+  let target = '';
+  try { target = new URL(info?.redirect_uri).host; } catch { /* ohne Ziel */ }
+  return html`<div class="login-wrap">
+    <div class="login-card">
+      <div class="brand"><${BrandMark} />${APP_NAME}</div>
+      <h1 class="login-title">Zugriff freigeben</h1>
+      ${info ? html`
+        <p><strong>${info.client?.name || info.client?.client_name || 'Ein Programm'}</strong> möchte in deinem Namen auf das CRM zugreifen.</p>
+        <p class="muted small">Es darf dann genau das, was du in der App darfst: lesen, Deals anlegen und ändern, Notizen schreiben. Löschen geht auf diesem Weg nicht.</p>
+        <p class="muted small">Angemeldet als ${session.user?.email}${target && html`, zurück an ${target}`}</p>
+        <div class="consent-actions">
+          <button class="btn primary" disabled=${busy} onClick=${() => decide(true)}>Erlauben</button>
+          <button class="btn" disabled=${busy} onClick=${() => decide(false)}>Ablehnen</button>
+        </div>`
+    : !msg && html`<p class="muted small">Lädt …</p>`}
+      ${msg && html`<p class="form-error" role="alert">${msg}</p>`}
+      <div class="login-links"><button type="button" class="btn link sm" onClick=${() => db.signOut()}>Mit anderem Konto anmelden</button></div>
+    </div>
+  </div>`;
 }
 
 // Feld für den 6-stelligen Code mit Bestätigen-Knopf
