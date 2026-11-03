@@ -862,6 +862,7 @@ function SettingsSheet({ onLogout }) {
           <button type="button" class="btn" onClick=${onLogout}>${DEMO ? 'Demo zurücksetzen' : 'Abmelden'}</button>
         </div>
       </div>
+      <${GoogleAccounts} />
       <div class="field"><span>Zwei-Faktor</span>
         ${newFactor ? html`
           <p class="muted small">Neuen Faktor einrichten. Bis du den ersten Code bestätigst, gilt der bisherige weiter.</p>
@@ -872,6 +873,54 @@ function SettingsSheet({ onLogout }) {
       </div>
     </section>
   <//>`;
+}
+
+// Postfach und Kalender bei Google verbinden, jede Person mit ihrem eigenen Konto. Der Abgleich läuft
+// online bei Supabase (supabase/functions/google-abgleich), Mails und Termine gehören der Person.
+function GoogleAccounts() {
+  const { session, actions } = useApp();
+  const route = useRoute();
+  const [list, setList] = useState(null);
+  const [address, setAddress] = useState(session.user?.email || '');
+  const [busy, setBusy] = useState(false);
+  const load = () => db.rpc('meine_google_konten').then((l) => setList(l || [])).catch(() => setList([]));
+  useEffect(() => {
+    load();
+    // Zurück von der Google-Anmeldung
+    const g = route.query.get('google');
+    if (g === 'verbunden') actions.notify(`${route.query.get('info')} ist verbunden. Mails und Termine kommen in den nächsten Minuten.`);
+    if (g === 'fehler') actions.fail(new Error(route.query.get('info') || 'Verbinden hat nicht geklappt.'));
+  }, []);
+
+  async function connect() {
+    setBusy(true);
+    try { location.href = await db.googleStart(address.trim()); } catch (e) { actions.fail(e); setBusy(false); }
+  }
+  async function syncNow() {
+    setBusy(true);
+    try { await db.googleSync(); await load(); actions.notify('Abgeglichen.'); } catch (e) { actions.fail(e); } finally { setBusy(false); }
+  }
+  async function disconnect(k) {
+    if (!confirm(`${k.address} trennen? Bisherige Mails und Termine bleiben im CRM, neue kommen nicht mehr dazu.`)) return;
+    try { await db.rpc('google_konto_trennen', { kid: k.id }); await load(); } catch (e) { actions.fail(e); }
+  }
+
+  if (DEMO) return null;
+  return html`<div class="field"><span>Postfach und Kalender</span>
+    ${list === null ? html`<p class="muted small">Lädt …</p>` : list.map((k) => html`<div class="google-acc" key=${k.id}>
+      <div><strong>${k.address}</strong>
+        <div class="muted small">${k.status === 'fehler' ? `Fehler: ${k.fehler}`
+          : k.letzter_lauf ? `${k.mails} Mails, ${k.termine} Termine, zuletzt ${relDate(k.letzter_lauf)}` : 'Wird gleich zum ersten Mal abgeglichen.'}</div></div>
+      <button type="button" class="btn ghost xs danger" onClick=${() => disconnect(k)}>Trennen</button>
+    </div>`)}
+    <p class="muted small">Verbinde dein Google-Konto, dann holt das CRM alle paar Minuten deine Mails (ohne Newsletter) und Termine, auch wenn kein Rechner läuft. Nur du siehst sie.</p>
+    <label class="field"><span>Google-Adresse</span>
+      <input type="email" value=${address} onInput=${(e) => setAddress(e.target.value)} /></label>
+    <div class="form-actions">
+      <button type="button" class="btn primary" disabled=${busy || !address.includes('@')} onClick=${connect}>Mit Google verbinden</button>
+      ${list?.length > 0 && html`<button type="button" class="btn" disabled=${busy} onClick=${syncNow}>Jetzt abgleichen</button>`}
+    </div>
+  </div>`;
 }
 
 function Avatar({ name, size, square }) {
@@ -2199,7 +2248,7 @@ function NewEventSheet({ query }) {
           <option value="">Konto, das im Browser angemeldet ist</option>
         </select></label>
       <button class="btn primary full" disabled=${!valid}><${Icon} n="calendar" />In Google Kalender öffnen</button>
-      <p class="muted small">Google Kalender öffnet sich mit allem ausgefüllt. Dort auf „Speichern“ klicken, dann verschickt Google die Einladungen. Fehlt der Meet-Link, dort „Google Meet-Videokonferenz hinzufügen“ wählen. Im CRM erscheint der Termin nach dem nächsten Abgleich, spätestens nach 15 Minuten.</p>
+      <p class="muted small">Google Kalender öffnet sich mit allem ausgefüllt. Dort auf „Speichern“ klicken, dann verschickt Google die Einladungen. Fehlt der Meet-Link, dort „Google Meet-Videokonferenz hinzufügen“ wählen. Im CRM erscheint der Termin nach dem nächsten Abgleich, meist nach wenigen Minuten.</p>
     </form>
   <//>`;
 }

@@ -36,6 +36,19 @@ function check({ data, error }) {
   return data;
 }
 
+async function googleCall(path, body) {
+  const c = await client();
+  const session = check(await c.auth.getSession()).session;
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/google-abgleich/${path}`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.message || `Fehler ${res.status}`);
+  return data;
+}
+
 // Anmeldeserver direkt ansprechen, die eingebundene supabase.js kennt die OAuth-Freigabe noch nicht
 async function oauthCall(method, path, body) {
   const c = await client();
@@ -115,6 +128,13 @@ const remote = {
   async rpc(fn, args = {}) {
     const c = await client();
     return check(await c.rpc(fn, args));
+  },
+  // Google-Konto verbinden und abgleichen (Edge Function google-abgleich)
+  async googleStart(address) {
+    return (await googleCall('start', { address })).url;
+  },
+  async googleSync() {
+    return googleCall('sync', {});
   },
   // Freigabe für Claude: Supabase ist der Anmeldeserver, diese Seite fragt nur nach Erlaubnis
   async oauthDetails(id) {
