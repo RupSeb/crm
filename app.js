@@ -1307,7 +1307,7 @@ function Board({ projectId }) {
       }
       if (s.is_done) { actions.notify('Die Spalte für Erledigtes bleibt. Umbenennen geht.'); return; }
       const n = (await db.list('cards', { stage_id: s.id }, 'id')).length;
-      if (n) { actions.notify(`In „${s.name}“ liegen noch ${n} Deals, auch archivierte zählen. Erst verschieben, dann löschen.`); return; }
+      if (n) { actions.notify(`In „${s.name}“ ${n === 1 ? 'liegt noch 1 Deal' : `liegen noch ${n} Deals`}, auch archivierte zählen. Erst verschieben, dann löschen.`); return; }
       if (confirm(`Spalte „${s.name}“ löschen?`)) await actions.drop('stages', s.id);
     } catch { /* Meldung kommt über fail */ }
   }
