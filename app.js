@@ -592,7 +592,8 @@ function Main({ session }) {
       if (!sharesOf.has(x.card_id)) sharesOf.set(x.card_id, []);
       sharesOf.get(x.card_id).push(x);
     });
-    const userName = new Map(data.users.map((u) => [u.email.toLowerCase(), u.name]));
+    // „claude“: Änderungen über den CRM-Zugang für Claude (tools/crm_mcp.py)
+    const userName = new Map([...data.users.map((u) => [u.email.toLowerCase(), u.name]), ['claude', 'Claude']]);
     const projectSharesOf = new Map();
     data.project_shares.forEach((x) => {
       if (!projectSharesOf.has(x.project_id)) projectSharesOf.set(x.project_id, []);
@@ -606,7 +607,9 @@ function Main({ session }) {
     const me = (session?.user?.email || '').toLowerCase();
     const seenAt = new Map(data.card_seen.filter((x) => x.email.toLowerCase() === me).map((x) => [x.card_id, ts(x.seen_at)]));
     // Neu: jemand anderes hat seit meinem letzten Öffnen etwas geändert
-    const isNew = (c) => (historyOf.get(c.id) || []).some((e) => e.actor && e.actor.toLowerCase() !== me
+    // Was Claude im Auftrag des Eigentümers ändert, ist für ihn selbst nicht neu
+    const byOther = (actor) => actor && actor.toLowerCase() !== me && !(data.role === 'owner' && actor.toLowerCase() === 'claude');
+    const isNew = (c) => (historyOf.get(c.id) || []).some((e) => byOther(e.actor)
       && (!seenAt.has(c.id) || ts(e.at) > seenAt.get(c.id)));
     const mentionedMe = (c) => (historyOf.get(c.id) || []).some((e) => e.kind === 'erwaehnung'
       && (e.detail || '').toLowerCase() === me && (!seenAt.has(c.id) || ts(e.at) > seenAt.get(c.id)));
@@ -1687,7 +1690,9 @@ function NotesPanel({ filter, defaults }) {
 
 function NoteItem({ note, showCard, onSave, onDelete }) {
   const { idx, actions, isGuest, me, users } = useApp();
-  const author = note.author && note.author.toLowerCase() !== me ? idx.userName.get(note.author.toLowerCase()) || note.author : null;
+  // Bei Notizen von Claude zeigt schon die Plakette „Claude“, wer geschrieben hat
+  const author = note.author && note.author.toLowerCase() !== me && note.source !== 'claude'
+    ? idx.userName.get(note.author.toLowerCase()) || note.author : null;
   const mine = !note.author || note.author.toLowerCase() === me;
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
