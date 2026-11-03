@@ -1403,6 +1403,12 @@ function CardSheet({ id, query }) {
   const { idx, projects, stages, persons, organizations, actions, isGuest, users, me, project_shares } = useApp();
   const isNew = id === 'neu';
   const card = isNew ? null : idx.card.get(Number(id));
+  // Mails zum Deal: vom Kontakt, ohne Kontakt von allen Kontakten der Firma. Gäste sehen nie Mails.
+  // Der eigene Kontakt bleibt außen vor, an ihm hängt sonst jede eigene Mail.
+  const myName = norm(users.find((u) => u.email?.toLowerCase() === me)?.name);
+  const notMe = (p) => p && !(myName && norm(p.name) === myName) && !(p.emails || []).some((e) => e.toLowerCase() === me);
+  const mailPeople = (!card || isGuest ? [] : card.person_id ? [idx.person.get(card.person_id)]
+    : card.org_id ? persons.filter((p) => p.org_id === card.org_id) : []).filter(notMe).map((p) => p.id);
   const firstStage = (pid) => stages.filter((s) => s.project_id === pid).sort(bySort)[0]?.id ?? null;
   const [form, setForm] = useState(() => {
     if (card) {
@@ -1567,6 +1573,7 @@ function CardSheet({ id, query }) {
     ${card && html`<${FilesPanel} card=${card} />`}
     ${card && html`<${NotesPanel} filter=${{ card_id: card.id }}
       defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
+    ${mailPeople.length > 0 && html`<${EmailsPanel} personIds=${mailPeople} />`}
   <//>`;
 }
 
