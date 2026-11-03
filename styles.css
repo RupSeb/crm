@@ -714,10 +714,8 @@ details.more[open] summary { margin-bottom: 12px; }
   background: rgba(8, 12, 10, 0.62);
   animation: fade 0.15s ease-out;
 }
-/* clip statt hidden: schneidet die runden Ecken ab, ohne einen eigenen Scrollbereich zu bilden,
-   so bleibt der Kopf beim Scrollen oben stehen */
 .sheet {
-  width: 100%; max-width: 680px; overflow: hidden; overflow: clip;
+  width: 100%; max-width: 680px; overflow: hidden;
   background: var(--bg); border-radius: 16px; box-shadow: var(--shadow-lg);
   animation: rise 0.18s ease-out;
 }
@@ -795,7 +793,8 @@ details.more[open] summary { margin-bottom: 12px; }
   input, select, textarea, .search input { font-size: 16px !important; }
   /* flex-start statt stretch: sonst wäre das Fenster genau bildschirmhoch und der Rest abgeschnitten */
   .overlay { padding: 0; align-items: flex-start; background: var(--bg); }
-  .sheet { max-width: none; min-height: 100dvh; border-radius: 0; box-shadow: none; animation: none; }
+  /* clip statt hidden bildet keinen eigenen Scrollbereich, so bleibt der Kopf beim Scrollen oben stehen */
+  .sheet { max-width: none; min-height: 100dvh; overflow: clip; border-radius: 0; box-shadow: none; animation: none; }
   .sheet-head { padding-top: calc(10px + env(safe-area-inset-top)); }
   .sheet-body { padding: 16px 14px calc(30px + env(safe-area-inset-bottom)); }
   .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
