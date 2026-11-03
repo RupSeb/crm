@@ -1,7 +1,9 @@
 // Service Worker: hält die App-Dateien vor, damit sie schnell startet und
 // auch ohne Netz aufgeht. Immer zuerst das Netz fragen, damit Updates sofort
 // ankommen. Datenbank-Anfragen (andere Domain) laufen nie über den Cache.
-const CACHE = 'crm-v22';
+// „no-cache“: beim Server nachfragen statt bis zu 10 Minuten den Browser-Zwischenspeicher
+// von GitHub Pages zu nehmen. Unveränderte Dateien kosten dabei nur eine kurze Rückfrage.
+const CACHE = 'crm-v23';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'demo.js', 'config.js',
   'manifest.webmanifest', 'vendor/preact-htm.js', 'vendor/purify.js', 'vendor/supabase.js',
@@ -11,7 +13,8 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -26,7 +29,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
   e.respondWith(
-    fetch(e.request)
+    // Über die Adresse statt über die Anfrage: Seitenaufrufe (mode „navigate“) lassen sich nicht mit Optionen neu bauen
+    fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' })
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(e.request, copy));

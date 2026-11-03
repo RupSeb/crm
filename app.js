@@ -3025,4 +3025,10 @@ render(html`<${App} />`, root);
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
+  // Kommt eine neue Fassung, einmal neu laden, damit nicht die alte App weiterläuft
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloaded) { reloaded = true; location.reload(); }
+  });
 }
