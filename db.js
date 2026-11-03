@@ -148,6 +148,17 @@ const remote = {
     }
     return out;
   },
+  // Postfach: Mails seitenweise, neueste zuerst. before = sent_at der ältesten schon geladenen Mail.
+  async mails({ mailbox = '', direction = '', text = '', before = null, limit = 50, columns = '*' } = {}) {
+    const c = await client();
+    let q = c.from('emails').select(columns).order('sent_at', { ascending: false }).order('id', { ascending: false }).limit(limit);
+    if (mailbox) q = q.eq('mailbox', mailbox);
+    if (direction) q = q.eq('direction', direction);
+    if (before) q = q.lt('sent_at', before);
+    const t = text.replace(/[,()*%"\\]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (t) q = q.or(['subject', 'from_name', 'from_email', 'body'].map((f) => `${f}.ilike."*${t}*"`).join(','));
+    return check(await q);
+  },
   // Volltextsuche in einer Spalte: alle Wörter müssen vorkommen. Liefert nur IDs.
   async searchText(table, column, text) {
     const c = await client();
@@ -295,6 +306,16 @@ const demo = {
   async listIn(table, column, values) {
     const set = new Set(values);
     return state()[table].filter((r) => set.has(r[column])).map(copy);
+  },
+  async mails({ mailbox = '', direction = '', text = '', before = null, limit = 50 } = {}) {
+    const t = text.toLowerCase().trim();
+    return state().emails
+      .filter((m) => (!mailbox || m.mailbox === mailbox) && (!direction || m.direction === direction)
+        && (!before || m.sent_at < before)
+        && (!t || ['subject', 'from_name', 'from_email', 'body'].some((f) => String(m[f] || '').toLowerCase().includes(t))))
+      .sort((a, b) => (a.sent_at < b.sent_at ? 1 : -1))
+      .slice(0, limit)
+      .map(copy);
   },
   async searchText(table, column, text) {
     const words = text.toLowerCase().split(/\s+/).filter(Boolean);

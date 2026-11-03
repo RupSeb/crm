@@ -455,13 +455,14 @@ function Login({ start, onDone }) {
 const TABS = [
   ['heute', 'Übersicht', 'home', '#/heute'],
   ['board', 'Board', 'board', '#/board'],
+  ['postfach', 'Postfach', 'mail', '#/postfach'],
   ['kalender', 'Kalender', 'calendar', '#/kalender'],
   ['meetings', 'Meetings', 'mic', '#/meetings'],
   ['kontakte', 'Kontakte', 'person', '#/kontakte'],
   ['firmen', 'Firmen', 'building', '#/firmen'],
 ];
 const TAB_OF = {
-  heute: 'heute', board: 'board', karte: 'board', kalender: 'kalender', termin: 'kalender',
+  heute: 'heute', board: 'board', karte: 'board', postfach: 'postfach', kalender: 'kalender', termin: 'kalender',
   meetings: 'meetings', meeting: 'meetings', kontakte: 'kontakte', kontakt: 'kontakte', firmen: 'firmen', firma: 'firmen',
 };
 // Meetings ohne die (langen) Zusammenfassungen laden, die kommen erst beim Öffnen.
@@ -717,6 +718,7 @@ function Main({ session }) {
     switch (s) {
       case 'board': return html`<${Board} projectId=${id} />`;
       case 'meetings': return html`<${MeetingsList} projectId=${id} />`;
+      case 'postfach': return html`<${MailboxPage} />`;
       case 'kalender': return html`<${CalendarPage} />`;
       case 'kontakte': return html`<${PersonsList} />`;
       case 'kontakt': return html`<${PersonPage} key=${'p' + id} person=${idx.person.get(Number(id))} />`;
@@ -2571,7 +2573,94 @@ function EmailsPanel({ personIds }) {
   </section>`;
 }
 
-function EmailItem({ mail: m }) {
+// Postfach: alle Mails aus allen angebundenen Postfächern, neueste zuerst. Geladen wird seitenweise
+// direkt aus der Datenbank, die Suche läuft dort über Betreff, Absender und Text.
+// Wie Mails überall im CRM gehört das Postfach nur seinem Besitzer.
+const MAIL_PAGE = 50;
+
+function MailboxPage() {
+  const { actions, idx, users, me } = useApp();
+  const [box, setBox] = useStored('crm-postfach-box', '');
+  const [dir, setDir] = useStored('crm-postfach-dir', '');
+  const [q, setQ] = useStored('crm-postfach-q', '');
+  const [text, setText] = useState(q);
+  const [boxes, setBoxes] = useState([]);
+  const [mails, setMails] = useState(null);
+  const [more, setMore] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [people, setPeople] = useState(new Map());
+
+  useEffect(() => {
+    db.list('emails', {}, 'mailbox').then((rows) => {
+      const n = new Map();
+      rows.forEach((r) => n.set(r.mailbox, (n.get(r.mailbox) || 0) + 1));
+      setBoxes([...n.entries()].sort((a, b) => b[1] - a[1]));
+    }).catch(actions.fail);
+  }, []);
+  // Suche erst nach einer kurzen Tipp-Pause abschicken
+  useEffect(() => {
+    const t = setTimeout(() => setText(q.trim()), 350);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // Verknüpfte Kontakte je Mail, ohne den eigenen Kontakt
+  const myName = norm(users.find((u) => u.email?.toLowerCase() === me)?.name);
+  async function linksOf(rows) {
+    const links = rows.length ? await db.listIn('email_persons', 'email_id', rows.map((m) => m.id), 'email_id,person_id') : [];
+    const out = new Map();
+    links.forEach((l) => {
+      const p = idx.person.get(l.person_id);
+      if (!p || (myName && norm(p.name) === myName)) return;
+      if (!out.has(l.email_id)) out.set(l.email_id, []);
+      out.get(l.email_id).push(p);
+    });
+    return out;
+  }
+
+  async function load(before) {
+    const rows = await db.mails({ mailbox: box, direction: dir, text, before, limit: MAIL_PAGE, columns: EMAIL_COLUMNS });
+    const links = await linksOf(rows);
+    setPeople((p) => new Map([...(before ? p : []), ...links]));
+    setMore(rows.length === MAIL_PAGE);
+    return rows;
+  }
+  useEffect(() => {
+    let alive = true;
+    setMails(null);
+    load(null).then((rows) => { if (alive) setMails(rows); }).catch((e) => { actions.fail(e); if (alive) setMails([]); });
+    return () => { alive = false; };
+  }, [box, dir, text]);
+
+  async function older() {
+    setBusy(true);
+    try {
+      const rows = await load(mails[mails.length - 1].sent_at);
+      setMails((l) => [...l, ...rows]);
+    } catch (e) { actions.fail(e); } finally { setBusy(false); }
+  }
+
+  const total = boxes.reduce((s, [, n]) => s + n, 0);
+  return html`<div class="page">
+    <${PageHead} title="Postfach" count=${!text && !dir ? (box ? boxes.find(([b]) => b === box)?.[1] : total) : null} />
+    <div class="toolbar">
+      <${SearchBox} value=${q} onInput=${setQ} placeholder="Betreff, Absender, Text" />
+      <div class="seg small" role="group" aria-label="Richtung">
+        ${[['', 'Alle'], ['in', 'Empfangen'], ['out', 'Gesendet']].map(([k, l]) => html`<button key=${k}
+          class=${'seg-btn' + (dir === k ? ' on' : '')} onClick=${() => setDir(k)}>${l}</button>`)}
+      </div>
+    </div>
+    ${boxes.length > 1 && html`<${LabelFilter} labels=${boxes} value=${box} onChange=${setBox} />`}
+    ${mails === null ? html`<p class="muted pad">Lädt …</p>`
+    : mails.length === 0 ? html`<p class="muted pad">${text || box || dir ? 'Keine passenden Mails.'
+      : 'Noch keine Mails. Sie kommen über den Abgleich aus den angebundenen Postfächern.'}</p>`
+    : html`<section class="notes mails postfach">
+        ${mails.map((m) => html`<${EmailItem} key=${m.id} mail=${m} people=${people.get(m.id)} showBox=${!box && boxes.length > 1} />`)}
+      </section>`}
+    ${more && mails?.length > 0 && html`<button class="btn ghost full" disabled=${busy} onClick=${older}>${busy ? 'Lädt …' : 'Ältere laden'}</button>`}
+  </div>`;
+}
+
+function EmailItem({ mail: m, people = [], showBox = false }) {
   const { actions } = useApp();
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState(null);
@@ -2593,7 +2682,7 @@ function EmailItem({ mail: m }) {
       <span class=${'mail-dir ' + (out ? 'out' : 'in')} title=${out ? 'Gesendet' : 'Empfangen'}>${out ? '↗' : '↘'}</span>
       <span class="mail-main">
         <span class="mail-subject">${m.subject || '(ohne Betreff)'}</span>
-        <span class="mail-meta">${who} · ${fullDate(m.sent_at)}</span>
+        <span class="mail-meta">${who} · ${fullDate(m.sent_at)}${showBox ? ` · ${m.mailbox.split('@')[1] || m.mailbox}` : ''}</span>
       </span>
     </button>
     ${open && html`<div class="mail-body">
@@ -2602,7 +2691,8 @@ function EmailItem({ mail: m }) {
         ${quote && html`<button class="btn link sm" onClick=${() => setShowQuote(!showQuote)}>${showQuote ? 'Verlauf ausblenden' : 'Zitierten Verlauf anzeigen'}</button>`}
         ${quote && showQuote && html`<div class="mail-text quote">${quote}</div>`}`}
       ${(m.attachments || []).length > 0 && html`<p class="meta">Anhänge: ${m.attachments.join(', ')}</p>`}
-      <p class="meta">Postfach ${m.mailbox}${gmailUrl ? html` · <a href=${gmailUrl} target="_blank" rel="noopener">In Gmail öffnen</a>` : ''}</p>
+      ${people.length > 0 && html`<p class="meta">Kontakt: ${people.map((p, i) => html`${i ? ', ' : ''}<a key=${p.id} href=${`#/kontakt/${p.id}`}>${p.name}</a>`)}</p>`}
+      <p class="meta">Postfach ${m.mailbox}${gmailUrl ? html` · <a href=${gmailUrl} target="_blank" rel="noopener">In Gmail öffnen und antworten</a>` : ''}</p>
     </div>`}
   </article>`;
 }
