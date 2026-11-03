@@ -149,11 +149,13 @@ const remote = {
     return out;
   },
   // Postfach: Mails seitenweise, neueste zuerst. before = sent_at der ältesten schon geladenen Mail.
-  async mails({ mailbox = '', direction = '', text = '', before = null, limit = 50, columns = '*' } = {}) {
+  // view: 'inbox' (liegt in Gmail im Posteingang), 'out' (gesendet) oder '' (alle)
+  async mails({ mailbox = '', view = '', text = '', before = null, limit = 50, columns = '*' } = {}) {
     const c = await client();
     let q = c.from('emails').select(columns).order('sent_at', { ascending: false }).order('id', { ascending: false }).limit(limit);
     if (mailbox) q = q.eq('mailbox', mailbox);
-    if (direction) q = q.eq('direction', direction);
+    if (view === 'inbox') q = q.eq('in_inbox', true);
+    if (view === 'out') q = q.eq('direction', 'out');
     if (before) q = q.lt('sent_at', before);
     const t = text.replace(/[,()*%"\\]/g, ' ').replace(/\s+/g, ' ').trim();
     if (t) q = q.or(['subject', 'from_name', 'from_email', 'body'].map((f) => `${f}.ilike."*${t}*"`).join(','));
@@ -261,6 +263,10 @@ function logDemoUpdate(before, after) {
   });
 }
 
+// Postfach-Ansicht einer Mail. Demo-Mails haben keinen Posteingangs-Merker, eingehende gelten dort als im Posteingang.
+export const matchesView = (m, view) => (view === 'inbox' ? (m.in_inbox ?? m.direction === 'in')
+  : view === 'out' ? m.direction === 'out' : true);
+
 const demo = {
   async session() { return { user: { email: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de' } }; },
   async onAuth() {},
@@ -307,10 +313,10 @@ const demo = {
     const set = new Set(values);
     return state()[table].filter((r) => set.has(r[column])).map(copy);
   },
-  async mails({ mailbox = '', direction = '', text = '', before = null, limit = 50 } = {}) {
+  async mails({ mailbox = '', view = '', text = '', before = null, limit = 50 } = {}) {
     const t = text.toLowerCase().trim();
     return state().emails
-      .filter((m) => (!mailbox || m.mailbox === mailbox) && (!direction || m.direction === direction)
+      .filter((m) => (!mailbox || m.mailbox === mailbox) && matchesView(m, view)
         && (!before || m.sent_at < before)
         && (!t || ['subject', 'from_name', 'from_email', 'body'].some((f) => String(m[f] || '').toLowerCase().includes(t))))
       .sort((a, b) => (a.sent_at < b.sent_at ? 1 : -1))
