@@ -1236,14 +1236,14 @@ function TodoRow({ card, waiting }) {
 // Board
 // ---------------------------------------------------------------------------
 function Board({ projectId }) {
-  const { projects, stages, cards, idx, isMobile, actions, session } = useApp();
+  const { projects, stages, cards, idx, isMobile, isGuest, actions, session } = useApp();
   const [q, setQ] = useState('');
   const [dragId, setDragId] = useState(null);
   const [over, setOver] = useState(null);
   const [showAll, setShowAll] = useState({});
   const [mobileStage, setMobileStage] = useState(null);
   const project = idx.project.get(Number(projectId)) || idx.project.get(Number(ls.get('crm-project'))) || projects[0];
-  const cols = useMemo(() => (project ? stages.filter((s) => s.project_id === project.id) : []), [stages, project]);
+  const cols = useMemo(() => (project ? stages.filter((s) => s.project_id === project.id).sort(bySort) : []), [stages, project]);
   const tabsRef = useRef(null);
   useEffect(() => {
     if (!project) return;
@@ -1282,6 +1282,42 @@ function Board({ projectId }) {
   };
   const newHref = (s) => `#/karte/neu?projekt=${project.id}&spalte=${s.id}`;
 
+  // Spalten anlegen, umbenennen und löschen darf, wem das Projekt gehört
+  const editCols = !isGuest && idx.ownsProject(project.id);
+  // Neue Spalte vor „Erledigt“, damit Erledigtes hinten bleibt
+  async function addStage() {
+    const name = prompt('Name der neuen Spalte:');
+    if (!name?.trim()) return;
+    const done = cols.find((s) => s.is_done);
+    const sort = done ? done.sort : (cols.at(-1)?.sort ?? -1) + 1;
+    try {
+      for (const s of cols.filter((x) => x.sort >= sort)) await actions.save('stages', { id: s.id, sort: s.sort + 1 });
+      const s = await actions.save('stages', { project_id: project.id, name: name.trim(), sort });
+      setMobileStage(s.id);
+    } catch { /* Meldung kommt über fail */ }
+  }
+  // Mit einer Spalte löscht die Datenbank auch ihre Deals, daher nur leere Spalten (auch ohne archivierte)
+  async function editStage(s) {
+    const name = prompt('Spalte umbenennen. Leer lassen, um sie zu löschen:', s.name);
+    if (name === null) return;
+    try {
+      if (name.trim()) {
+        if (name.trim() !== s.name) await actions.save('stages', { id: s.id, name: name.trim() });
+        return;
+      }
+      if (s.is_done) { actions.notify('Die Spalte für Erledigtes bleibt. Umbenennen geht.'); return; }
+      const n = (await db.list('cards', { stage_id: s.id }, 'id')).length;
+      if (n) { actions.notify(`In „${s.name}“ liegen noch ${n} Deals, auch archivierte zählen. Erst verschieben, dann löschen.`); return; }
+      if (confirm(`Spalte „${s.name}“ löschen?`)) await actions.drop('stages', s.id);
+    } catch { /* Meldung kommt über fail */ }
+  }
+  // Beim Ziehen nahe am Rand das Board mitscrollen, damit auch Spalten außerhalb des Bildes erreichbar sind
+  const edgeScroll = (e) => {
+    const b = e.currentTarget.getBoundingClientRect();
+    if (e.clientX > b.right - 70) e.currentTarget.scrollLeft += 24;
+    else if (e.clientX < b.left + 70) e.currentTarget.scrollLeft -= 24;
+  };
+
   const projectTabs = html`<div class="project-tabs" ref=${tabsRef}>
     ${projects.map((p) => html`<a key=${p.id} href=${`#/board/${p.id}`} class=${'ptab' + (p.id === project.id ? ' on' : '')}
       style=${`--pc:${p.color}`} title=${idx.ownsProject(p.id) ? '' : `Geteilt von ${idx.userName.get(idx.ownerOf(p.id)) || idx.ownerOf(p.id)}`}>
@@ -1309,8 +1345,11 @@ function Board({ projectId }) {
       ${search}
       ${share}
       <div class="stage-tabs">
-        ${cols.map((s) => html`<button key=${s.id} class=${'stab' + (s.id === active.id ? ' on' : '')} onClick=${() => setMobileStage(s.id)}>
+        ${cols.map((s) => html`<button key=${s.id} class=${'stab' + (s.id === active.id ? ' on' : '')}
+          onClick=${() => (s.id === active.id && editCols ? editStage(s) : setMobileStage(s.id))}
+          title=${s.id === active.id && editCols ? 'Spalte umbenennen oder löschen' : ''}>
           ${s.name}<span class="count">${byStage.get(s.id).length}</span></button>`)}
+        ${editCols && html`<button class="stab add" onClick=${addStage} title="Spalte hinzufügen" aria-label="Spalte hinzufügen">+</button>`}
       </div>
       <div class="mobile-list">${cardList(active, byStage.get(active.id))}</div>
       <${Fab} href=${newHref(active)} label="Neue Aufgabe" />
@@ -1319,47 +1358,31 @@ function Board({ projectId }) {
 
   return html`<div class="board-page">
     <div class="board-head">${projectTabs}${search}${share}</div>
-    <div class="board" style=${`--cols:${cols.length}`}>
+    <div class="board" style=${`--cols:${cols.length}`} onDragOver=${edgeScroll}>
       ${cols.map((s) => html`<section key=${s.id} class=${'column' + (over === s.id ? ' over' : '')}
           onDragOver=${(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (over !== s.id) setOver(s.id); }}
           onDragLeave=${(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(null); }}
           onDrop=${(e) => { e.preventDefault(); setOver(null); move(Number(e.dataTransfer.getData('text/plain')), s.id); }}>
         <header class="col-head">
-          <span>${s.name}</span><span class="count">${byStage.get(s.id).length}</span>
+          ${editCols ? html`<button type="button" class="col-name" onClick=${() => editStage(s)} title="Spalte umbenennen oder löschen">${s.name}</button>`
+            : html`<span>${s.name}</span>`}<span class="count">${byStage.get(s.id).length}</span>
           <a class="icon-btn" href=${newHref(s)} title="Aufgabe hinzufügen" aria-label="Aufgabe hinzufügen"><${Icon} n="plus" /></a>
         </header>
         <div class="col-body">${cardList(s, byStage.get(s.id))}</div>
       </section>`)}
+      ${editCols && html`<button type="button" class="col-add" onClick=${addStage} title="Spalte hinzufügen" aria-label="Spalte hinzufügen">
+        <${Icon} n="plus" /></button>`}
     </div>
   </div>`;
 }
 
-// Ganzes Projekt teilen: alle Deals darin, auch künftige. Teilen darf nur, wem das Projekt gehört.
+// Ganze Projekte lassen sich nicht teilen, nur einzelne Deals (in der Karte unter „Teilen“).
+// Bei einem fremden Projekt steht hier, von wem die geteilten Deals darin kommen.
 function ProjectShare({ project }) {
-  const { users, project_shares, actions, isGuest, idx, me } = useApp();
-  if (isGuest || !project) return null;
-  if (!idx.ownsProject(project.id)) {
-    const owner = idx.ownerOf(project.id);
-    return html`<div class="project-share"><span class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(owner) || owner}</span></div>`;
-  }
-  const guests = users.filter((u) => u.email !== me);
-  if (!guests.length) return null;
-  const rows = project_shares.filter((x) => x.project_id === project.id);
-  const on = (u) => rows.find((x) => x.email.toLowerCase() === u.email);
-  async function toggle(u) {
-    const row = on(u);
-    const rights = u.role === 'gast' ? 'und kann dort selbst Deals anlegen' : 'und kann dort alles bearbeiten und anlegen';
-    if (!row && !confirm(`Ganzes Projekt „${project.name}“ mit ${u.name} teilen? ${u.name} sieht dann alle Deals darin, auch neue, ${rights}.`)) return;
-    try {
-      if (row) await actions.drop('project_shares', row.id);
-      else await actions.save('project_shares', { project_id: project.id, email: u.email });
-    } catch { /* fail */ }
-  }
-  return html`<div class="project-share">
-    <span class="muted small"><${Icon} n="share" /> Projekt teilen</span>
-    ${guests.map((u) => html`<button key=${u.email} type="button" class=${'chip toggle share' + (on(u) ? ' on' : '')}
-      title=${on(u) ? 'Freigabe für das ganze Projekt aufheben' : 'Alle Deals dieses Projekts teilen'} onClick=${() => toggle(u)}>${u.name}</button>`)}
-  </div>`;
+  const { isGuest, idx } = useApp();
+  if (isGuest || !project || idx.ownsProject(project.id)) return null;
+  const owner = idx.ownerOf(project.id);
+  return html`<div class="project-share"><span class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(owner) || owner}</span></div>`;
 }
 
 function CardBadges({ card }) {
@@ -1563,16 +1586,15 @@ function CardSheet({ id, query }) {
       else await actions.save('card_shares', { card_id: card.id, email: u.email });
     } catch { /* fail */ }
   }
-  const viaProject = (u) => (idx.projectSharesOf.get(form.project_id) || []).some((x) => x.email.toLowerCase() === u.email);
-  const sharedNames = [...new Set([...shares.map((x) => x.email.toLowerCase()), ...guests.filter(viaProject).map((u) => u.email)])]
-    .map((e) => idx.userName.get(e) || e);
-  // Zuständig: wird sofort gespeichert. Bekommt jemand eine Karte, die er nicht sieht, wird sie mit ihm geteilt.
+  const sharedNames = shares.map((x) => idx.userName.get(x.email.toLowerCase()) || x.email);
+  // Zuständig: wird sofort gespeichert. Sieht die Person die Karte noch nicht, wird sie nur nach Rückfrage geteilt.
   async function pickAssignee(email) {
     set('assignee', email);
     if (!card) return;
     await actions.patch('cards', card.id, { assignee: email });
     const u = users.find((x) => x.email === email);
-    if (!isGuest && ownProject && u && !idx.visibleFor(card, email)) {
+    if (!isGuest && ownProject && u && !idx.visibleFor(card, email)
+        && confirm(`${u.name} sieht diese Karte noch nicht. Für ${u.name} freigeben?`)) {
       try {
         await actions.save('card_shares', { card_id: card.id, email });
         actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
@@ -1596,9 +1618,8 @@ function CardSheet({ id, query }) {
       ${card && !ownProject && html`<p class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(idx.ownerOf(card.project_id)) || idx.ownerOf(card.project_id)}</p>`}
       ${card && ownProject && guests.length > 0 && html`<div class="field share-field"><span>Teilen</span>
         <div class="chips">${guests.map((u) => html`<button type="button" key=${u.email}
-          class=${'chip toggle share' + (shares.some((x) => x.email.toLowerCase() === u.email) || viaProject(u) ? ' on' : '')}
-          disabled=${viaProject(u)} title=${viaProject(u) ? 'Über das ganze Projekt geteilt' : ''}
-          onClick=${() => toggleShare(u)}><${Icon} n="share" />${u.name}${viaProject(u) ? ' (Projekt)' : ''}</button>`)}</div>
+          class=${'chip toggle share' + (shares.some((x) => x.email.toLowerCase() === u.email) ? ' on' : '')}
+          onClick=${() => toggleShare(u)}><${Icon} n="share" />${u.name}</button>`)}</div>
         <p class="muted small">${sharedNames.length
     ? `${sharedNames.join(', ')} sieht diese Karte und ihre Notizen, außer denen mit Schloss. Mails, Meetings und andere Karten nicht.`
     : 'Nur du siehst diese Karte. Antippen, um sie zu teilen.'}</p>
@@ -1779,11 +1800,12 @@ function NotesPanel({ filter, defaults }) {
       setNotes((l) => [n, ...(l || [])]);
       setText('');
       setPriv(false);
-      // Wird jemand erwähnt, der die Karte nicht sieht, bekommt er sie geteilt (wenn mir das Projekt gehört)
+      // Wird jemand erwähnt, der die Karte nicht sieht, nur nach Rückfrage teilen (wenn mir das Projekt gehört)
       const card = idx.card.get(filter.card_id);
       for (const email of mentions) {
         const u = users.find((x) => x.email === email);
-        if (card && !isGuest && u && idx.ownsProject(card.project_id) && !idx.visibleFor(card, email)) {
+        if (card && !isGuest && u && idx.ownsProject(card.project_id) && !idx.visibleFor(card, email)
+            && confirm(`${u.name} sieht diese Karte noch nicht und bekommt die Erwähnung erst mit der Freigabe. Für ${u.name} freigeben?`)) {
           await actions.save('card_shares', { card_id: card.id, email });
           actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
         }

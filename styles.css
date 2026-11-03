@@ -530,11 +530,22 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .todo-meta .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pc); flex: none; }
 .todo-meta .badges { margin-left: 4px; }
 
+/* Spalten über die ganze Höhe, damit man einen Deal überall in der Spalte ablegen kann, nicht nur auf ihrem Kopf */
 .board {
-  display: grid; grid-template-columns: repeat(var(--cols), minmax(250px, 1fr));
-  gap: 14px; align-items: start; overflow-x: auto; padding-bottom: 12px;
+  display: grid; grid-template-columns: repeat(var(--cols), minmax(210px, 1fr)) auto;
+  gap: 14px; align-items: stretch; overflow-x: auto; padding-bottom: 12px;
 }
-.column { background: var(--col-bg); border-radius: 14px; padding: 8px; border: 2px solid transparent; }
+.column {
+  display: flex; flex-direction: column; min-height: calc(100dvh - 200px);
+  background: var(--col-bg); border-radius: 14px; padding: 8px; border: 2px solid transparent;
+}
+.col-name { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.col-name:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.col-add {
+  width: 44px; display: grid; justify-items: center; align-content: start; padding-top: 12px;
+  border: 2px dashed var(--border); border-radius: 14px; background: none; color: var(--muted); cursor: pointer;
+}
+.col-add:hover { color: var(--text); border-color: var(--border-strong); }
 .column.over { border-color: var(--accent); border-style: dashed; background: var(--accent-soft); }
 .col-head { display: flex; align-items: center; gap: 8px; padding: 4px 4px 10px 6px; font-weight: 600; font-size: 14px; }
 .col-head .icon-btn { margin-left: auto; }
@@ -564,6 +575,7 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 }
 .stab.on { background: var(--text); border-color: var(--text); color: var(--bg); }
 .stab.on .count { background: rgba(127, 127, 127, 0.3); color: inherit; }
+.stab.add { padding: 0 14px; border-style: dashed; color: var(--muted); font-size: 18px; }
 .mobile-list { display: flex; flex-direction: column; gap: 8px; }
 
 /* ---------- Listen und Detailseiten ---------- */
