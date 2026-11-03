@@ -288,7 +288,13 @@ function ClaudeConsent({ id, session }) {
   useEffect(() => {
     if (!id) { setMsg('Der Link ist unvollständig. Bitte die Verbindung in Claude neu starten.'); return; }
     db.oauthDetails(id)
-      .then((d) => { if (d.redirect_url) location.replace(d.redirect_url); else setInfo(d); })
+      .then(async (d) => {
+        if (!d.redirect_url) { setInfo(d); return; }
+        // Schon früher erlaubt: Supabase leitet gleich weiter. Die Freigabe trotzdem eintragen,
+        // sonst lässt das CRM die neue Sitzung von Claude nicht zu (supabase/15_claude_freigabe_wiederverbinden.sql)
+        await db.rpc('claude_freigeben', { auth_id: id, cid: '' });
+        location.replace(d.redirect_url);
+      })
       .catch((e) => setMsg(friendly(e)));
   }, [id]);
 
