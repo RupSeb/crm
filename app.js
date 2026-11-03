@@ -172,6 +172,8 @@ function friendly(err) {
   const m = String(err?.message || err);
   if (/invalid login credentials/i.test(m)) return 'E-Mail oder Passwort stimmt nicht.';
   if (/insufficient_aal|aal2 session is required/i.test(m)) return 'Bitte zuerst den Code aus deiner Authenticator-App bestätigen. Lade die Seite neu, dann kommt das Feld dafür.';
+  // Freigabeseite noch einmal geladen, nachdem Claude den Zugang schon bekommen hat. Neu anmelden würde ihn wieder beenden.
+  if (/authorization not found/i.test(m)) return 'Diese Freigabe ist schon erledigt. Bitte dieses Fenster schließen und in Claude weitermachen. Hier nicht neu anmelden, das würde die Verbindung zu Claude wieder trennen.';
   if (/totp|invalid.*code|code.*invalid|mfa/i.test(m)) return 'Der Code stimmt nicht. Bitte den aktuellen Code aus der App eingeben.';
   if (/email not confirmed/i.test(m)) return 'Bitte zuerst den Link in der Bestätigungsmail anklicken.';
   if (/already registered|already exists/i.test(m)) return 'Für diese E-Mail gibt es schon ein Konto. Bitte anmelden.';
@@ -285,6 +287,8 @@ function ClaudeConsent({ id, session }) {
   const [info, setInfo] = useState(null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  // Anfrage schon erledigt: dann kein „Mit anderem Konto anmelden“ anbieten, das würde Claude wieder trennen
+  const [done, setDone] = useState(false);
   useEffect(() => {
     if (!id) { setMsg('Der Link ist unvollständig. Bitte die Verbindung in Claude neu starten.'); return; }
     db.oauthDetails(id)
@@ -295,7 +299,7 @@ function ClaudeConsent({ id, session }) {
         await db.rpc('claude_freigeben', { auth_id: id, cid: '' });
         location.replace(d.redirect_url);
       })
-      .catch((e) => setMsg(friendly(e)));
+      .catch((e) => { setMsg(friendly(e)); setDone(/authorization not found/i.test(String(e?.message))); });
   }, [id]);
 
   async function decide(approve) {
@@ -323,7 +327,7 @@ function ClaudeConsent({ id, session }) {
         </div>`
     : !msg && html`<p class="muted small">Lädt …</p>`}
       ${msg && html`<p class="form-error" role="alert">${msg}</p>`}
-      <div class="login-links"><button type="button" class="btn link sm" onClick=${() => db.signOut()}>Mit anderem Konto anmelden</button></div>
+      ${!done && html`<div class="login-links"><button type="button" class="btn link sm" onClick=${() => db.signOut()}>Mit anderem Konto anmelden</button></div>`}
     </div>
   </div>`;
 }
@@ -3146,7 +3150,10 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   let pending = false;
   const typing = () => [...document.querySelectorAll('textarea, input:not([type=checkbox]):not([type=radio]):not([type=search])')]
     .some((e) => e.value && e.offsetParent !== null);
-  const reloadIfIdle = () => { if (pending && !typing()) { pending = false; location.reload(); } };
+  // Die Freigabeseite für Claude nie neu laden: sie würde die schon erledigte Anfrage noch einmal abfragen
+  const reloadIfIdle = () => {
+    if (pending && !typing() && !location.hash.startsWith('#/claude-freigabe')) { pending = false; location.reload(); }
+  };
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!hadController || pending) return;
     pending = true;
