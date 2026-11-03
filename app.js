@@ -1097,27 +1097,19 @@ function TeamTile() {
 
 function Overview() {
   const { cards, meetings, idx, me } = useApp();
-  const [showAll, setShowAll] = useState(false);
+  const [showAll, setShowAll] = useState({});
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
   // Was jemand anderem zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
   const open = cards.filter((c) => !c.archived && (!c.assignee || c.assignee.toLowerCase() === me));
   const todo = open.filter((c) => kind(c) === 'todo' || kind(c) === 'doing');
   const waiting = open.filter((c) => kind(c) === 'waiting').sort((a, b) => ts(a.updated_at) - ts(b.updated_at));
 
-  // Gruppen wie auf einem Zettel: erst Fälliges, dann Dringendes, dann der Rest
-  const groups = [
-    ['Überfällig und heute', (c) => c.due_date && daysUntil(c.due_date) <= 0],
-    ['Dringend', (c) => c.priority === 'hoch'],
-    ['Diese Woche', (c) => c.due_date && daysUntil(c.due_date) < 7],
-    ['Weitere', () => true],
-  ];
-  const left = new Set(todo.map((c) => c.id));
-  const sections = groups.map(([title, test]) => {
-    const list = todo.filter((c) => left.has(c.id) && test(c))
-      .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9') || prioRank(a) - prioRank(b) || byUpdatedDesc(a, b));
-    list.forEach((c) => left.delete(c.id));
-    return [title, list];
-  }).filter(([, list]) => list.length > 0);
+  // Gruppen nach Dringlichkeit in der Reihenfolge von prioRank: hoch, mittel, ohne, niedrig.
+  // Innerhalb nach Fälligkeit, Überfälliges steht damit oben in seiner Gruppe.
+  const groups = ['Dringend', 'Mittel', 'Ohne Dringlichkeit', 'Niedrig'];
+  const sections = groups.map((title, rank) => [title, todo.filter((c) => prioRank(c) === rank)
+    .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9') || byUpdatedDesc(a, b))])
+    .filter(([, list]) => list.length > 0);
   const recent = [...meetings].sort(byHeldDesc).slice(0, 6);
   const today = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
 
@@ -1128,14 +1120,15 @@ function Overview() {
         <h2>Zu erledigen <span class="count">${todo.length}</span></h2>
         <${QuickAdd} />
         ${sections.map(([title, list]) => {
-    const isRest = title === 'Weitere';
-    const shown = isRest && !showAll ? list.slice(0, 8) : list;
+    // Hoch und Mittel immer ganz, die anderen erst nach „Alle anzeigen“
+    const isRest = title === 'Ohne Dringlichkeit' || title === 'Niedrig';
+    const shown = isRest && !showAll[title] ? list.slice(0, 8) : list;
     return html`<div class="todo-group" key=${title}>
-            <h3 class=${'group-' + (title === 'Überfällig und heute' ? 'late' : title === 'Dringend' ? 'urgent' : 'normal')}>
+            <h3 class=${'group-' + (title === 'Dringend' ? 'urgent' : 'normal')}>
               ${title} <span class="count">${list.length}</span></h3>
             ${shown.map((c) => html`<${TodoRow} key=${c.id} card=${c} />`)}
-            ${isRest && list.length > 8 && html`<button class="btn link sm" onClick=${() => setShowAll(!showAll)}>
-              ${showAll ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>`}
+            ${isRest && list.length > 8 && html`<button class="btn link sm" onClick=${() => setShowAll({ ...showAll, [title]: !showAll[title] })}>
+              ${showAll[title] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>`}
           </div>`;
   })}
         ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
