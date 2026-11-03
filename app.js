@@ -3082,11 +3082,26 @@ root.textContent = '';
 render(html`<${App} />`, root);
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
-  // Kommt eine neue Fassung, einmal neu laden, damit nicht die alte App weiterläuft
-  const hadController = !!navigator.serviceWorker.controller;
-  let reloaded = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (hadController && !reloaded) { reloaded = true; location.reload(); }
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      // Der Browser fragt sonst nur beim Öffnen nach einer neuen Fassung, ein Fenster bleibt aber oft den ganzen Tag offen
+      const check = () => reg.update().catch(() => {});
+      setInterval(check, 30 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+    }).catch(() => {});
   });
+  // Kommt eine neue Fassung, einmal neu laden, damit nicht die alte App weiterläuft. Steht in einem Feld
+  // gerade Text, erst beim nächsten Seitenwechsel oder Zurückkommen, damit nichts Getipptes verloren geht.
+  const hadController = !!navigator.serviceWorker.controller;
+  let pending = false;
+  const typing = () => [...document.querySelectorAll('textarea, input:not([type=checkbox]):not([type=radio]):not([type=search])')]
+    .some((e) => e.value && e.offsetParent !== null);
+  const reloadIfIdle = () => { if (pending && !typing()) { pending = false; location.reload(); } };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || pending) return;
+    pending = true;
+    reloadIfIdle();
+  });
+  addEventListener('hashchange', () => setTimeout(reloadIfIdle, 300));
+  document.addEventListener('visibilitychange', reloadIfIdle);
 }
