@@ -660,8 +660,15 @@ function Main({ session }) {
       && (!seenAt.has(c.id) || ts(e.at) > seenAt.get(c.id)));
     const mentionedMe = (c) => (historyOf.get(c.id) || []).some((e) => e.kind === 'erwaehnung'
       && (e.detail || '').toLowerCase() === me && (!seenAt.has(c.id) || ts(e.at) > seenAt.get(c.id)));
-    // Sieht ein Gast diese Karte? Direkt geteilt oder über ihr Projekt
-    const visibleFor = (c, email) => (sharesOf.get(c.id) || []).some((x) => x.email.toLowerCase() === email)
+    // Wem gehört ein Projekt? Teilen, löschen und Deals herausschieben darf nur der Besitzer.
+    // Zeilen ohne Besitzer (Demo) gehören mir.
+    const project = byId(data.projects);
+    const ownerOf = (pid) => (project.get(pid)?.owner || me).toLowerCase();
+    const ownsProject = (pid) => ownerOf(pid) === me;
+    const ownsRow = (row) => !row?.owner || row.owner.toLowerCase() === me;
+    // Sieht jemand diese Karte? Besitzer des Projekts, direkt geteilt oder über ihr Projekt
+    const visibleFor = (c, email) => ownerOf(c.project_id) === email
+      || (sharesOf.get(c.id) || []).some((x) => x.email.toLowerCase() === email)
       || (projectSharesOf.get(c.project_id) || []).some((x) => x.email.toLowerCase() === email);
     return {
       sharesOf,
@@ -670,8 +677,11 @@ function Main({ session }) {
       isNew,
       mentionedMe,
       visibleFor,
+      ownerOf,
+      ownsProject,
+      ownsRow,
       userName,
-      project: byId(data.projects),
+      project,
       stage: byId(data.stages),
       org: byId(data.organizations),
       person: byId(data.persons),
@@ -1214,7 +1224,8 @@ function Board({ projectId }) {
 
   const projectTabs = html`<div class="project-tabs" ref=${tabsRef}>
     ${projects.map((p) => html`<a key=${p.id} href=${`#/board/${p.id}`} class=${'ptab' + (p.id === project.id ? ' on' : '')}
-      style=${`--pc:${p.color}`}><span class="dot"></span>${p.name}</a>`)}
+      style=${`--pc:${p.color}`} title=${idx.ownsProject(p.id) ? '' : `Geteilt von ${idx.userName.get(idx.ownerOf(p.id)) || idx.ownerOf(p.id)}`}>
+      <span class="dot"></span>${p.name}${!idx.ownsProject(p.id) && html` <${Icon} n="share" />`}</a>`)}
     <button class="ptab add" onClick=${newProject} title="Projekt anlegen" aria-label="Projekt anlegen">+</button>
   </div>`;
   const search = html`<${SearchBox} value=${q} onInput=${setQ} placeholder="Aufgaben durchsuchen" />`;
@@ -1263,16 +1274,22 @@ function Board({ projectId }) {
   </div>`;
 }
 
-// Ganzes Projekt mit Gästen teilen: alle Deals darin, auch künftige
+// Ganzes Projekt teilen: alle Deals darin, auch künftige. Teilen darf nur, wem das Projekt gehört.
 function ProjectShare({ project }) {
-  const { users, project_shares, actions, isGuest } = useApp();
-  const guests = users.filter((u) => u.role === 'gast');
-  if (isGuest || !project || !guests.length) return null;
+  const { users, project_shares, actions, isGuest, idx, me } = useApp();
+  if (isGuest || !project) return null;
+  if (!idx.ownsProject(project.id)) {
+    const owner = idx.ownerOf(project.id);
+    return html`<div class="project-share"><span class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(owner) || owner}</span></div>`;
+  }
+  const guests = users.filter((u) => u.email !== me);
+  if (!guests.length) return null;
   const rows = project_shares.filter((x) => x.project_id === project.id);
   const on = (u) => rows.find((x) => x.email.toLowerCase() === u.email);
   async function toggle(u) {
     const row = on(u);
-    if (!row && !confirm(`Ganzes Projekt „${project.name}“ mit ${u.name} teilen? ${u.name} sieht dann alle Deals darin, auch neue, und kann dort selbst Deals anlegen.`)) return;
+    const rights = u.role === 'gast' ? 'und kann dort selbst Deals anlegen' : 'und kann dort alles bearbeiten und anlegen';
+    if (!row && !confirm(`Ganzes Projekt „${project.name}“ mit ${u.name} teilen? ${u.name} sieht dann alle Deals darin, auch neue, ${rights}.`)) return;
     try {
       if (row) await actions.drop('project_shares', row.id);
       else await actions.save('project_shares', { project_id: project.id, email: u.email });
@@ -1331,7 +1348,7 @@ const safeFileName = (name) => name.replace(/ä/g, 'ae').replace(/ö/g, 'oe').re
 const fileSize = (n) => (n > 1e6 ? `${(n / 1e6).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
 
 function FilesPanel({ card }) {
-  const { actions, isGuest } = useApp();
+  const { actions, isGuest, idx } = useApp();
   const [files, setFiles] = useState(null);
   const [busy, setBusy] = useState(false);
   const prefix = `karten/${card.id}`;
@@ -1375,7 +1392,7 @@ function FilesPanel({ card }) {
       : files.map((f) => html`<div class="file-row" key=${f.name}>
         <button type="button" class="file-open" onClick=${() => open(f)}><${Icon} n="file" /><span class="ell">${fileLabel(f.name)}</span></button>
         <span class="muted small">${fileSize(f.metadata?.size || 0)} · ${shortDate(f.created_at)}</span>
-        ${!isGuest && html`<button type="button" class="btn ghost xs danger" onClick=${() => del(f)}>Löschen</button>`}
+        ${!isGuest && idx.ownsProject(card.project_id) && html`<button type="button" class="btn ghost xs danger" onClick=${() => del(f)}>Löschen</button>`}
       </div>`)}
   </section>`;
 }
@@ -1475,7 +1492,9 @@ function CardSheet({ id, query }) {
     try { await actions.remove('cards', card.id); close(); } catch { /* fail */ }
   }
   // Teilen mit Gästen (z. B. Geschäftspartner): sie sehen nur diese Karte
-  const guests = users.filter((u) => u.role === 'gast');
+  // Teilen, löschen und in andere Projekte schieben darf nur, wem das Projekt des Deals gehört
+  const ownProject = !card || idx.ownsProject(card.project_id);
+  const guests = users.filter((u) => u.email !== me);
   const shares = card ? idx.sharesOf.get(card.id) || [] : [];
   async function toggleShare(u) {
     const row = shares.find((x) => x.email.toLowerCase() === u.email);
@@ -1487,13 +1506,13 @@ function CardSheet({ id, query }) {
   const viaProject = (u) => (idx.projectSharesOf.get(form.project_id) || []).some((x) => x.email.toLowerCase() === u.email);
   const sharedNames = [...new Set([...shares.map((x) => x.email.toLowerCase()), ...guests.filter(viaProject).map((u) => u.email)])]
     .map((e) => idx.userName.get(e) || e);
-  // Zuständig: wird sofort gespeichert. Bekommt ein Gast eine Karte, die er nicht sieht, wird sie mit ihm geteilt.
+  // Zuständig: wird sofort gespeichert. Bekommt jemand eine Karte, die er nicht sieht, wird sie mit ihm geteilt.
   async function pickAssignee(email) {
     set('assignee', email);
     if (!card) return;
     await actions.patch('cards', card.id, { assignee: email });
     const u = users.find((x) => x.email === email);
-    if (!isGuest && u?.role === 'gast' && !idx.visibleFor(card, email)) {
+    if (!isGuest && ownProject && u && !idx.visibleFor(card, email)) {
       try {
         await actions.save('card_shares', { card_id: card.id, email });
         actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
@@ -1514,7 +1533,8 @@ function CardSheet({ id, query }) {
         <textarea ref=${titleRef} rows="2" class="title-input" value=${form.title} placeholder="Was ist zu tun?"
           onInput=${(e) => set('title', e.target.value)}
           onKeyDown=${(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); } }}></textarea></label>
-      ${card && guests.length > 0 && html`<div class="field share-field"><span>Teilen</span>
+      ${card && !ownProject && html`<p class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(idx.ownerOf(card.project_id)) || idx.ownerOf(card.project_id)}</p>`}
+      ${card && ownProject && guests.length > 0 && html`<div class="field share-field"><span>Teilen</span>
         <div class="chips">${guests.map((u) => html`<button type="button" key=${u.email}
           class=${'chip toggle share' + (shares.some((x) => x.email.toLowerCase() === u.email) || viaProject(u) ? ' on' : '')}
           disabled=${viaProject(u)} title=${viaProject(u) ? 'Über das ganze Projekt geteilt' : ''}
@@ -1525,7 +1545,8 @@ function CardSheet({ id, query }) {
       </div>`}
       <label class="field"><span>Projekt</span>
         <select value=${form.project_id} onChange=${(e) => changeProject(Number(e.target.value))}>
-          ${projects.filter((p) => !isGuest || guestProjects.has(p.id)).map((p) => html`<option key=${p.id} value=${p.id}>${p.name}</option>`)}
+          ${projects.filter((p) => (isGuest ? guestProjects.has(p.id) : ownProject || p.id === card.project_id))
+            .map((p) => html`<option key=${p.id} value=${p.id}>${p.name}</option>`)}
         </select></label>`}
       <div class="field"><span>Spalte</span>
         <div class="seg wrap">${projStages.map((s) => html`<button type="button" key=${s.id}
@@ -1562,7 +1583,7 @@ function CardSheet({ id, query }) {
         <button class="btn primary" disabled=${busy || !dirty || !form.title.trim()}>${isNew ? 'Anlegen' : 'Speichern'}</button>
         ${card && !isGuest && html`<span class="spacer"></span>
           <button type="button" class="btn ghost" onClick=${archive}>${card.archived ? 'Wiederherstellen' : 'Archivieren'}</button>
-          <button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}
+          ${ownProject && html`<button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}`}
       </div>
       ${card && html`<p class="meta">Angelegt ${fullDate(card.created_at)} · geändert ${relDate(card.updated_at)}</p>`}
       ${history.length > 0 && html`<details class="more history"><summary>Verlauf <span class="count">${history.length}</span></summary>
@@ -1692,17 +1713,17 @@ function NotesPanel({ filter, defaults }) {
     setBusy(true);
     try {
       const isPrivate = !isGuest && priv;
-      // Notizen mit Schloss erwähnen niemanden, die sieht ja nur der Eigentümer
+      // Notizen mit Schloss erwähnen niemanden, die sieht ja nur, wer sie schreibt
       const mentions = filter.card_id && !isPrivate ? findMentions(text, users, me) : [];
       const n = await db.insert('notes', { ...defaults, content: textToHtml(text), source: 'manual', private: isPrivate, mentions });
       setNotes((l) => [n, ...(l || [])]);
       setText('');
       setPriv(false);
-      // Wird ein Gast erwähnt, der die Karte nicht sieht, bekommt er sie geteilt
+      // Wird jemand erwähnt, der die Karte nicht sieht, bekommt er sie geteilt (wenn mir das Projekt gehört)
       const card = idx.card.get(filter.card_id);
       for (const email of mentions) {
         const u = users.find((x) => x.email === email);
-        if (card && !isGuest && u?.role === 'gast' && !idx.visibleFor(card, email)) {
+        if (card && !isGuest && u && idx.ownsProject(card.project_id) && !idx.visibleFor(card, email)) {
           await actions.save('card_shares', { card_id: card.id, email });
           actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
         }
@@ -1730,7 +1751,7 @@ function NotesPanel({ filter, defaults }) {
         ${others.map((u) => html`<button type="button" key=${u.email} class="chip" onClick=${() => insertMention(u)}>@${u.name.split(/\s+/)[0]}</button>`)}
       </div>`}
       <div class="note-new-actions">
-        ${!isGuest && filter.card_id && html`<label class="check-line small" title="Gäste, mit denen die Karte geteilt ist, sehen diese Notiz nicht">
+        ${!isGuest && filter.card_id && html`<label class="check-line small" title="Nur du siehst diese Notiz, alle anderen mit Zugriff auf den Deal nicht">
           <input type="checkbox" checked=${priv} onChange=${(e) => setPriv(e.target.checked)} /><${Icon} n="lock" />Nur für mich</label>`}
         ${!isMobile && html`<span class="hint">Strg + Enter speichert</span>`}
         <button class="btn primary sm" disabled=${busy || !text.trim()}>Notiz speichern</button>
@@ -1747,7 +1768,8 @@ function NoteItem({ note, showCard, onSave, onDelete }) {
   // Bei Notizen von Claude zeigt schon die Plakette „Claude“, wer geschrieben hat
   const author = note.author && note.author.toLowerCase() !== me && note.source !== 'claude'
     ? idx.userName.get(note.author.toLowerCase()) || note.author : null;
-  const mine = !note.author || note.author.toLowerCase() === me;
+  // Ändern und löschen darf nur, wem die Notiz gehört
+  const mine = idx.ownsRow(note);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState('');
@@ -1770,14 +1792,14 @@ function NoteItem({ note, showCard, onSave, onDelete }) {
       ${note.source === 'claude' && html`<span class="badge">Claude</span>`}
       ${card && html`<a class="badge link" href=${`#/karte/${card.id}`} title=${card.title}>${card.title}</a>`}
       ${author && html`<span class="badge author">${author}</span>`}
-      ${note.private && html`<span class="badge private" title="Gäste sehen diese Notiz nicht"><${Icon} n="lock" />Nur für mich</span>`}
+      ${note.private && html`<span class="badge private" title="Nur du siehst diese Notiz"><${Icon} n="lock" />Nur für mich</span>`}
       <span class="spacer"></span>
-      ${!isGuest && note.card_id && !editing && html`<button class="btn ghost xs" title=${note.private ? 'Für Gäste sichtbar machen' : 'Vor Gästen verbergen'}
+      ${!isGuest && mine && note.card_id && !editing && html`<button class="btn ghost xs" title=${note.private ? 'Für alle sichtbar machen, die den Deal sehen' : 'Nur für mich'}
         onClick=${async () => { try { await onSave(note, { private: !note.private }); } catch (e) { actions.fail(e); } }}>
         ${note.private ? 'Freigeben' : html`<${Icon} n="lock" />`}</button>`}
-      ${!editing && note.source !== 'meeting' && (!isGuest || mine) && html`<button class="btn ghost xs"
+      ${!editing && note.source !== 'meeting' && mine && html`<button class="btn ghost xs"
         onClick=${() => { setText(htmlToText(note.content)); setEditing(true); }}>Bearbeiten</button>`}
-      ${!isGuest && html`<button class="btn ghost xs danger" onClick=${del}>Löschen</button>`}
+      ${!isGuest && mine && html`<button class="btn ghost xs danger" onClick=${del}>Löschen</button>`}
     </header>
     ${editing ? html`<div class="note-edit">
         <textarea rows="5" value=${text} onInput=${(e) => setText(e.target.value)}></textarea>
@@ -2679,7 +2701,7 @@ async function deleteLooseNotes(filter) {
 }
 
 function PersonForm({ person }) {
-  const { organizations, persons, actions } = useApp();
+  const { organizations, persons, actions, idx } = useApp();
   const [f, setF] = useState(() => ({
     name: person?.name || '',
     org_id: person?.org_id ?? null,
@@ -2746,7 +2768,7 @@ function PersonForm({ person }) {
       <div class="form-actions">
         <button class="btn primary" disabled=${busy || !f.name.trim()}>${person ? 'Speichern' : 'Anlegen'}</button>
         <button type="button" class="btn ghost" onClick=${close}>Abbrechen</button>
-        ${person && html`<span class="spacer"></span><button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}
+        ${person && idx.ownsRow(person) && html`<span class="spacer"></span><button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}
       </div>
     </form>
   <//>`;
@@ -2839,7 +2861,7 @@ function OrgPage({ org: o }) {
 }
 
 function OrgForm({ org }) {
-  const { organizations, actions } = useApp();
+  const { organizations, actions, idx } = useApp();
   const [f, setF] = useState(() => ({
     name: org?.name || '',
     website: org?.website || '',
@@ -2893,7 +2915,7 @@ function OrgForm({ org }) {
       <div class="form-actions">
         <button class="btn primary" disabled=${busy || !f.name.trim()}>${org ? 'Speichern' : 'Anlegen'}</button>
         <button type="button" class="btn ghost" onClick=${close}>Abbrechen</button>
-        ${org && html`<span class="spacer"></span><button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}
+        ${org && idx.ownsRow(org) && html`<span class="spacer"></span><button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}
       </div>
     </form>
   <//>`;
