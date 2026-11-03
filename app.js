@@ -2642,7 +2642,7 @@ function MailboxPage() {
   const total = boxes.reduce((s, [, n]) => s + n, 0);
   return html`<div class="page">
     <${PageHead} title="Postfach" count=${!text && !dir ? (box ? boxes.find(([b]) => b === box)?.[1] : total) : null} />
-    <div class="toolbar">
+    <div class="toolbar wrap">
       <${SearchBox} value=${q} onInput=${setQ} placeholder="Betreff, Absender, Text" />
       <div class="seg small" role="group" aria-label="Richtung">
         ${[['', 'Alle'], ['in', 'Empfangen'], ['out', 'Gesendet']].map(([k, l]) => html`<button key=${k}

@@ -208,6 +208,7 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 15px var(--font); }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
 .toolbar .search { flex: 1 1 auto; max-width: 480px; }
+.toolbar.wrap { flex-wrap: wrap; }
 .seg { display: inline-flex; gap: 6px; }
 .seg.wrap { flex-wrap: wrap; }
 .seg.small { gap: 0; padding: 3px; background: var(--hover); border-radius: 10px; }
@@ -771,6 +772,8 @@ details.more[open] summary { margin-bottom: 12px; }
   .project-tabs { margin: 0 -14px; padding: 0 14px; }
   .board-page .search { margin-top: 10px; min-width: 0; }
   .search, .toolbar .search { flex: 1 1 auto; max-width: none; }
+  .toolbar.wrap .seg { display: flex; flex: 1 1 100%; }
+  .toolbar.wrap .seg .seg-btn { flex: 1; }
   .page-head h1, .detail-title h1 { font-size: 21px; }
   .label-filter { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -14px 12px; padding: 0 14px; }
   .label-filter::-webkit-scrollbar { display: none; }
