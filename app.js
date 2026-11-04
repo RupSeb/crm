@@ -4,7 +4,7 @@ import {
 import DOMPurify from './vendor/purify.js';
 import { db, DEMO, matchesView } from './db.js';
 import { STAGE_NAMES } from './demo.js';
-import { APP_NAME } from './config.js';
+import { APP_NAME, SUPABASE_URL } from './config.js';
 
 const PALETTE = ['#7fa7c9', '#d98b4f', '#a9b4ae', '#b08fd6', '#6fb58f', '#d9be90', '#e07a7a'];
 
@@ -211,6 +211,7 @@ const ICONS = {
   back: '<path d="M15 5l-7 7 7 7"/>',
   next: '<path d="M9 5l7 7-7 7"/>',
   down: '<path d="M5 9l7 7 7-7"/>',
+  spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
   reply: '<path d="M10 7l-5 5 5 5"/><path d="M5 12h9a5 5 0 015 5v1.5"/>',
   clip: '<path d="M20.5 11.5l-8.4 8.4a5 5 0 01-7.1-7.1l8.6-8.6a3.3 3.3 0 014.7 4.7l-8.6 8.6a1.7 1.7 0 01-2.4-2.4l7.9-7.9"/>',
   share: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0111 0M16 5a3 3 0 010 6M20.5 20a5.5 5.5 0 00-3.5-5.1"/>',
@@ -520,7 +521,7 @@ function Main({ session }) {
   const load = useCallback(async () => {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
-        card_shares, role, users, project_shares, card_events, card_seen, file_counts] = await Promise.all([
+        card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -533,6 +534,7 @@ function Main({ session }) {
         db.list('card_events').catch(() => []),
         db.list('card_seen').catch(() => []),
         db.rpc('card_file_counts').catch(() => []),
+        db.rpc('claude_status').catch(() => null),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
@@ -542,7 +544,7 @@ function Main({ session }) {
       const myProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
       const cards = role === 'gast' ? allCards.filter((c) => mine.has(c.id) || myProjects.has(c.project_id)) : allCards;
       setData({ projects, stages, organizations, persons, cards, meetings, meeting_persons, events, event_persons,
-        card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [] });
+        card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [], claude });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -595,6 +597,12 @@ function Main({ session }) {
         } catch (e) { fail(e); load(); }
       },
       reloadHistory,
+      // Ist der Claude-Connector gerade verbunden? (20_claude_status.sql)
+      async checkClaude() {
+        const claude = await db.rpc('claude_status').catch(() => null);
+        setData((d) => ({ ...d, claude }));
+        return claude;
+      },
       // Anzahl der Dateien einer Karte für die Büroklammer auf dem Board
       setFileCount(cardId, n) {
         setData((d) => ({ ...d, file_counts: [...(d.file_counts || []).filter((x) => x.card_id !== cardId), { card_id: cardId, n }] }));
@@ -776,6 +784,7 @@ function Main({ session }) {
     const newOk = a === 'neu' && (idx.projectSharesOf.get(Number(route.query.get('projekt'))) || []).length > 0;
     if (sec === 'karte' && (a !== 'neu' || newOk)) overlay = html`<${CardSheet} key=${'c' + a} id=${a} query=${route.query} />`;
     if (sec === 'einstellungen') overlay = html`<${SettingsSheet} key="settings" onLogout=${logout} />`;
+    if (sec === 'claude') overlay = html`<${ClaudeSheet} key="claude" query=${route.query} />`;
   } else if (sec === 'karte') {
     const c = idx.card.get(Number(a));
     bg = lastParts.current || ['board', c?.project_id ?? route.query.get('projekt')];
@@ -787,6 +796,9 @@ function Main({ session }) {
   } else if (sec === 'einstellungen') {
     bg = lastParts.current || ['heute'];
     overlay = html`<${SettingsSheet} key="settings" onLogout=${logout} />`;
+  } else if (sec === 'claude') {
+    bg = lastParts.current || ['heute'];
+    overlay = html`<${ClaudeSheet} key="claude" query=${route.query} />`;
   } else if (sec === 'termin' && a === 'neu') {
     bg = lastParts.current || ['kalender'];
     overlay = html`<${NewEventSheet} key=${'tn' + route.query} query=${route.query} />`;
@@ -883,8 +895,83 @@ function applyTheme(key) {
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', bg);
 }
 
+// ---------------------------------------------------------------------------
+// Mit Claude: öffnet einen neuen Chat in claude.ai im eigenen Claude-Konto, mit einer Frage zu Deal, Kontakt,
+// Firma oder Mail. Claude liest dort über den eigenen Connector „CRM“ (crm-mcp) nach und darf, was man in der App darf.
+// Ist der Connector nicht verbunden, führt der Knopf erst zur Anleitung (#/claude).
+// ---------------------------------------------------------------------------
+const MCP_URL = `${SUPABASE_URL}/functions/v1/crm-mcp`;
+const claudeUrl = (q) => `https://claude.ai/new?q=${encodeURIComponent(q)}`;
+const claudeAsk = {
+  deal: (c) => `Schau dir im CRM (Connector „CRM“) den Deal ${c.id} „${c.title}“ an und fasse kurz zusammen, wo er steht und was als Nächstes zu tun ist.`,
+  person: (p) => `Schau dir im CRM (Connector „CRM“) den Kontakt ${p.id} „${p.name}“ an und fasse zusammen, was mit der Person läuft und was offen ist.`,
+  org: (o) => `Schau dir im CRM (Connector „CRM“) die Firma ${o.id} „${o.name}“ an und fasse zusammen, welche Kontakte und Deals es gibt und was offen ist.`,
+  mail: (m) => `Lies im CRM (Connector „CRM“) die Mail ${m.id} „${m.subject || 'ohne Betreff'}“ und schlag mir eine Antwort und die nächsten Schritte vor.`,
+};
+
+function ClaudeButton({ prompt, cls = 'btn sm', label = 'Mit Claude' }) {
+  const { claude } = useApp();
+  const ok = !!claude?.verbunden;
+  return html`<a class=${cls} href=${ok ? claudeUrl(prompt) : `#/claude?frage=${encodeURIComponent(prompt)}`}
+    target=${ok ? '_blank' : null} rel=${ok ? 'noopener' : null} aria-label="Mit Claude besprechen"
+    title=${ok ? 'In Claude besprechen: neuer Chat in deinem Claude-Konto' : 'Claude ist noch nicht mit dem CRM verbunden'}
+    onClick=${(e) => e.stopPropagation()}><${Icon} n="spark" />${label}</a>`;
+}
+
+function ClaudeSheet({ query }) {
+  const { claude, actions } = useApp();
+  const [busy, setBusy] = useState(false);
+  const frage = query.get('frage') || '';
+  // Stand beim Öffnen und beim Zurückkommen aus claude.ai frisch holen
+  useEffect(() => {
+    actions.checkClaude();
+    const onShow = () => { if (document.visibilityState === 'visible') actions.checkClaude(); };
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
+  }, []);
+  const st = claude || {};
+  const state = st.verbunden ? 'ok' : st.freigabe ? 'getrennt' : 'neu';
+  async function check() {
+    setBusy(true);
+    const c = await actions.checkClaude();
+    setBusy(false);
+    actions.notify(c?.verbunden ? 'Claude ist mit dem CRM verbunden.' : 'Claude ist noch nicht verbunden.');
+  }
+  async function copy() {
+    try { await navigator.clipboard.writeText(MCP_URL); actions.notify('Adresse kopiert.'); } catch { actions.notify(MCP_URL); }
+  }
+  return html`<${Sheet} title="Claude und CRM" onClose=${() => back('#/heute')}>
+    <section class="form claude-connect">
+      <div class=${'notice claude-' + state}>${state === 'ok'
+    ? html`<strong>Verbunden.</strong> Claude arbeitet in deinem eigenen Claude-Konto mit dem CRM${st.zuletzt ? `, zuletzt genutzt ${fullDate(st.zuletzt)}` : ''}.`
+    : state === 'getrennt'
+      ? html`<strong>Verbindung getrennt.</strong> Das passiert nach jeder neuen Anmeldung mit Code im CRM. In Claude einmal neu verbinden, dann geht es weiter.`
+      : html`<strong>Noch nicht verbunden.</strong> Einmal einrichten, dann kann Claude in deinem eigenen Claude-Konto mit dem CRM arbeiten.`}</div>
+      ${state !== 'ok' && html`<ol class="steps">
+        <li><a href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">claude.ai → Einstellungen → Konnektoren</a> öffnen.
+          Dort muss dein eigenes Claude-Konto angemeldet sein.</li>
+        ${state === 'neu' ? html`
+          <li>„Benutzerdefinierten Konnektor hinzufügen“ mit dem Namen <code>CRM</code> und dieser Adresse:
+            <span class="copy-line"><code>${MCP_URL}</code><button type="button" class="btn xs" onClick=${copy}>Kopieren</button></span></li>
+          <li>Beim Connector „Verbinden“ klicken. Es öffnet sich das CRM: mit deiner CRM-Anmeldung und dem Code anmelden, dann „Erlauben“.</li>`
+    : html`<li>Beim Connector „CRM“ auf „Verbinden“ klicken. Die Freigabe springt von selbst zurück zu Claude.
+            Danach im CRM nicht noch einmal mit Code anmelden, sonst trennt sich Claude wieder.</li>`}
+        <li>Hierher zurückkommen, der Stand aktualisiert sich von selbst.</li>
+      </ol>`}
+      <div class="form-actions">
+        ${frage && html`<a class=${'btn' + (state === 'ok' ? ' primary' : '')} href=${claudeUrl(frage)} target="_blank" rel="noopener">
+          <${Icon} n="spark" />${state === 'ok' ? 'Frage in Claude öffnen' : 'Trotzdem in Claude öffnen'}</a>`}
+        <button type="button" class="btn ghost" disabled=${busy} onClick=${check}>${busy ? 'Prüft …' : 'Verbindung prüfen'}</button>
+      </div>
+      ${frage && html`<p class="muted small">Frage an Claude: ${frage}</p>`}
+      <p class="muted small">Die Knöpfe „Mit Claude“ bei Deals, Kontakten, Firmen und Mails öffnen einen neuen Chat mit einer passenden Frage.
+        Claude sieht im CRM genau das, was du in der App siehst, und gibt nichts ohne deinen Auftrag frei.</p>
+    </section>
+  <//>`;
+}
+
 function SettingsSheet({ onLogout }) {
-  const { session, actions } = useApp();
+  const { session, actions, claude } = useApp();
   const [theme, setTheme] = useState(ls.get('crm-theme') || '');
   const [ownTiles, setOwnTiles] = useState(() => Object.keys(tileColors()).length > 0);
   const [newFactor, setNewFactor] = useState(false);
@@ -908,6 +995,10 @@ function SettingsSheet({ onLogout }) {
             <span class="swatch" style=${`--s1:${s1};--s2:${s2}`}></span>${name}</button>`)}
         </div>
         <p class="muted small">Gilt für dieses Gerät.</p>
+      </div>
+      <div class="field"><span>Claude</span>
+        <p class="small">${claude?.verbunden ? 'Mit dem CRM verbunden.' : claude?.freigabe ? 'Verbindung getrennt, einmal neu verbinden.' : 'Noch nicht mit dem CRM verbunden.'}</p>
+        <div class="form-actions"><a class="btn" href="#/claude"><${Icon} n="spark" />${claude?.verbunden ? 'Claude und CRM' : 'Claude verbinden'}</a></div>
       </div>
       <div class="field"><span>Kacheln der Übersicht</span>
         <p class="muted small">Jede Kachel hat oben rechts einen Farbpunkt. Antippen öffnet die Farbauswahl, die Farbe gilt für dieses Gerät.</p>
@@ -1767,7 +1858,8 @@ function CardSheet({ id, query }) {
 
   const saveTop = html`<button type="button" class="btn primary sm" disabled=${busy || !form.title.trim()} onClick=${saveAll}
     title="Aufgabe und angefangene Notiz speichern und schließen">Speichern</button>`;
-  return html`<${Sheet} title=${isNew ? 'Neue Aufgabe' : 'Aufgabe'} onClose=${leave} action=${saveTop}>
+  const headActions = html`${card && !isNew && html`<${ClaudeButton} prompt=${claudeAsk.deal(card)} cls="btn sm ghost" label="Claude" />`}${saveTop}`;
+  return html`<${Sheet} title=${isNew ? 'Neue Aufgabe' : 'Aufgabe'} onClose=${leave} action=${headActions}>
     <div class="drop-zone" ...${dropProps}>
     ${dropping && html`<div class="drop-hint"><${Icon} n="clip" />Dateien hier ablegen, sie hängen dann an „${card.title}“</div>`}
     <form class="form" onSubmit=${submit}>
@@ -2964,6 +3056,7 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
           ${taskHref && html`<a class="icon-btn sm" href=${taskHref} title=${`Aufgabe mit ${person.name} anlegen`} aria-label="Aufgabe anlegen"><${Icon} n="board" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/termin/neu?gast=${person.id}`} title=${`Termin mit ${person.name}`} aria-label="Termin einladen"><${Icon} n="calendar" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/kontakt/${person.id}`} title=${`Kontakt ${person.name} öffnen`} aria-label="Kontakt öffnen"><${Icon} n="person" /></a>`}
+          <${ClaudeButton} prompt=${claudeAsk.mail(m)} cls="icon-btn sm" label="" />
         </span>
       </span>
     </div>
@@ -2978,6 +3071,7 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
         ${gmailUrl && html`<a class="btn sm" href=${gmailUrl} target="_blank" rel="noopener"><${Icon} n="reply" />In Gmail antworten</a>`}
         ${taskHref && html`<a class="btn sm" href=${taskHref}><${Icon} n="board" />Aufgabe anlegen</a>`}
         ${person && html`<a class="btn sm" href=${`#/termin/neu?gast=${person.id}`}><${Icon} n="calendar" />Termin einladen</a>`}
+        <${ClaudeButton} prompt=${claudeAsk.mail(m)} />
         ${people.map((p) => html`<a key=${p.id} class="btn sm ghost" href=${`#/kontakt/${p.id}`}><${Icon} n="person" />${p.name}</a>`)}
       </div>
     </div>`}
@@ -3055,6 +3149,7 @@ function PersonPage({ person: p }) {
           <button class="chip-x" title="Vorschlag verwerfen" aria-label="Vorschlag verwerfen" onClick=${dropSuggestion}>×</button>
         </div>`}
       </div>
+      <${ClaudeButton} prompt=${claudeAsk.person(p)} cls="btn" />
       <a class="btn" href=${`#/kontakt/${p.id}/bearbeiten`}>Bearbeiten</a>
     </div>
     <${ContactActions} phones=${p.phones} emails=${p.emails} />
@@ -3222,6 +3317,7 @@ function OrgPage({ org: o }) {
         ${o.address && html`<div class="sub-link">${o.address}</div>`}
         ${o.labels.length > 0 && html`<div class="chips">${o.labels.map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
       </div>
+      <${ClaudeButton} prompt=${claudeAsk.org(o)} cls="btn" />
       <a class="btn" href=${`#/firma/${o.id}/bearbeiten`}>Bearbeiten</a>
     </div>
     <div class="contact-actions">

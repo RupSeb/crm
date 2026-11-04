@@ -3,7 +3,7 @@
 // ankommen. Datenbank-Anfragen (andere Domain) laufen nie über den Cache.
 // „no-cache“: beim Server nachfragen statt bis zu 10 Minuten den Browser-Zwischenspeicher
 // von GitHub Pages zu nehmen. Unveränderte Dateien kosten dabei nur eine kurze Rückfrage.
-const CACHE = 'crm-v40';
+const CACHE = 'crm-v41';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'demo.js', 'config.js',
   'manifest.webmanifest', 'vendor/preact-htm.js', 'vendor/purify.js', 'vendor/supabase.js',
