@@ -138,6 +138,10 @@ function countLabels(list) {
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'de'));
 }
 
+// Label-Vorschläge aus der Datenbank (16_label_vorschlaege.sql), nur für den Besitzer und ohne schon gesetzte Labels
+const SUGGEST = '#vorschlag';
+const suggestionsFor = (p, idx) => (idx.ownsRow(p) ? (p.label_vorschlag || []).filter((l) => !p.labels.includes(l)) : []);
+
 const safeUrl = (u) => (/^https?:\/\//i.test(u) ? u : 'https://' + u);
 function waNumber(phone) {
   let d = phone.replace(/[^\d+]/g, '');
@@ -967,9 +971,11 @@ function SortToggle({ value, onChange }) {
   </div>`;
 }
 
-function LabelFilter({ labels, value, onChange }) {
+function LabelFilter({ labels, value, onChange, suggestN }) {
   return html`<div class="label-filter">
     <button class=${'chip toggle' + (!value ? ' on' : '')} onClick=${() => onChange('')}>Alle</button>
+    ${suggestN > 0 && html`<button class=${'chip toggle dashed' + (value === SUGGEST ? ' on' : '')}
+      onClick=${() => onChange(value === SUGGEST ? '' : SUGGEST)}>Vorschlag offen<span class="chip-n">${suggestN}</span></button>`}
     ${labels.map(([l, n]) => html`<button key=${l} class=${'chip toggle' + (value === l ? ' on' : '')}
       onClick=${() => onChange(value === l ? '' : l)}>${l}<span class="chip-n">${n}</span></button>`)}
   </div>`;
@@ -2819,12 +2825,14 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
 function PersonsList() {
   const { persons, idx, isMobile } = useApp();
   const [q, setQ] = useStored('crm-q-kontakte', '');
-  const [label, setLabel] = useStored('crm-l-kontakte', '');
+  const [stored, setLabel] = useStored('crm-l-kontakte', '');
   const [sort, setSort] = useStored('crm-s-kontakte', 'neu');
   const [limit, setLimit] = useState(100);
   const labels = useMemo(() => countLabels(persons), [persons]);
+  const suggestN = useMemo(() => persons.filter((p) => suggestionsFor(p, idx).length).length, [persons, idx]);
+  const label = stored === SUGGEST && !suggestN ? '' : stored;
   const list = useMemo(() => persons
-    .filter((p) => (!label || p.labels.includes(label))
+    .filter((p) => (!label || (label === SUGGEST ? suggestionsFor(p, idx).length > 0 : p.labels.includes(label)))
       && matches(q, p.name, idx.org.get(p.org_id)?.name || '', p.emails, p.phones))
     .sort(sort === 'az' ? byName : byUpdatedDesc), [persons, q, label, sort, idx]);
 
@@ -2835,7 +2843,7 @@ function PersonsList() {
       <${SearchBox} value=${q} onInput=${setQ} placeholder="Name, Firma, E-Mail, Telefon" />
       <${SortToggle} value=${sort} onChange=${setSort} />
     </div>
-    ${labels.length > 0 && html`<${LabelFilter} labels=${labels} value=${label} onChange=${setLabel} />`}
+    ${labels.length > 0 && html`<${LabelFilter} labels=${labels} value=${label} onChange=${setLabel} suggestN=${suggestN} />`}
     <div class="list">
       ${list.slice(0, limit).map((p) => html`<${PersonRow} key=${p.id} person=${p} />`)}
       ${list.length > limit && html`<button class="btn ghost full" onClick=${() => setLimit(limit + 200)}>Weitere anzeigen</button>`}
@@ -2849,19 +2857,25 @@ function PersonRow({ person }) {
   const { idx } = useApp();
   const org = idx.org.get(person.org_id);
   const sub = [org?.name, person.phones[0] || person.emails[0]].filter(Boolean).join(' · ');
+  const chips = [...person.labels.map((l) => [l, false]), ...suggestionsFor(person, idx).map((l) => [l, true])].slice(0, 2);
   return html`<a class="row" href=${`#/kontakt/${person.id}`}>
     <${Avatar} name=${person.name} />
     <div class="row-main"><div class="row-title">${person.name}</div>${sub && html`<div class="row-sub">${sub}</div>`}</div>
-    ${person.labels.length > 0 && html`<div class="row-labels">${person.labels.slice(0, 2).map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
+    ${chips.length > 0 && html`<div class="row-labels">${chips.map(([l, s]) => html`<span class=${'chip' + (s ? ' dashed' : '')}
+      key=${l} title=${s ? 'Vorschlag, noch nicht übernommen' : null}>${l}${s ? '?' : ''}</span>`)}</div>`}
   </a>`;
 }
 
 function PersonPage({ person: p }) {
-  const { idx, cards } = useApp();
+  const { idx, cards, actions } = useApp();
   if (!p) return html`<${NotFound} what="Kontakt" href="#/kontakte" />`;
   const org = idx.org.get(p.org_id);
   const pcards = cards.filter((c) => c.person_id === p.id);
   const hasProfile = p.ankauf_km != null || p.ankaufsprofil_url;
+  const sug = suggestionsFor(p, idx);
+  // Übernehmen setzt nur dieses Label, ein leerer Vorschlag gilt als erledigt
+  const takeLabel = (l) => actions.save('persons', { id: p.id, labels: [...p.labels, l], label_vorschlag: sug.filter((x) => x !== l) }).catch(() => {});
+  const dropSuggestion = () => actions.save('persons', { id: p.id, label_vorschlag: [] }).catch(() => {});
   return html`<div class="page detail">
     <a class="back" href="#/kontakte"><${Icon} n="back" />Kontakte</a>
     <div class="detail-head">
@@ -2870,6 +2884,11 @@ function PersonPage({ person: p }) {
         <h1>${p.name}</h1>
         ${org && html`<a class="sub-link" href=${`#/firma/${org.id}`}>${org.name}</a>`}
         ${p.labels.length > 0 && html`<div class="chips">${p.labels.map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
+        ${sug.length > 0 && html`<div class="chips suggest">
+          <span class="suggest-hint">Vorschlag</span>
+          ${sug.map((l) => html`<button key=${l} class="chip toggle dashed" title="Label übernehmen" onClick=${() => takeLabel(l)}><${Icon} n="plus" />${l}</button>`)}
+          <button class="chip-x" title="Vorschlag verwerfen" aria-label="Vorschlag verwerfen" onClick=${dropSuggestion}>×</button>
+        </div>`}
       </div>
       <a class="btn" href=${`#/kontakt/${p.id}/bearbeiten`}>Bearbeiten</a>
     </div>
