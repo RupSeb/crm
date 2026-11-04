@@ -138,6 +138,11 @@ function countLabels(list) {
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'de'));
 }
 
+// Zuständige einer Karte (17_mehrere_zustaendige.sql), Mailadressen klein geschrieben
+const assigneesOf = (c) => c.assignees || (c.assignee ? [c.assignee.toLowerCase()] : []);
+const sameValue = (a, b) => (Array.isArray(a) || Array.isArray(b)
+  ? JSON.stringify(a || []) === JSON.stringify(b || []) : (a ?? null) === (b ?? null));
+
 // Label-Vorschläge aus der Datenbank (16_label_vorschlaege.sql), nur für den Besitzer und ohne schon gesetzte Labels
 const SUGGEST = '#vorschlag';
 const suggestionsFor = (p, idx) => (idx.ownsRow(p) ? (p.label_vorschlag || []).filter((l) => !p.labels.includes(l)) : []);
@@ -205,6 +210,7 @@ const ICONS = {
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
   next: '<path d="M9 5l7 7-7 7"/>',
+  down: '<path d="M5 9l7 7 7-7"/>',
   share: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0111 0M16 5a3 3 0 010 6M20.5 20a5.5 5.5 0 00-3.5-5.1"/>',
   lock: '<rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 017 0v3"/>',
   file: '<path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>',
@@ -994,6 +1000,30 @@ function NotFound({ what, href }) {
   return html`<div class="empty-state"><h2>${what} nicht gefunden</h2><a class="btn" href=${href}>Zur Übersicht</a></div>`;
 }
 
+// Auswahlliste mit Häkchen (z. B. mehrere Zuständige). Bleibt offen, bis man daneben klickt oder Escape drückt.
+function MultiPick({ options, value, onToggle, empty }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const off = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', off);
+    return () => document.removeEventListener('mousedown', off);
+  }, [open]);
+  const chosen = options.filter((o) => value.includes(o.value));
+  return html`<div class="combo multi-pick" ref=${ref}
+    onKeyDown=${(e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false); } }}>
+    <button type="button" class="multi-pick-btn" aria-haspopup="listbox" aria-expanded=${open} onClick=${() => setOpen(!open)}>
+      <span class=${'ell' + (chosen.length ? '' : ' muted')}>${chosen.length ? chosen.map((o) => o.short || o.label).join(', ') : empty}</span>
+      <${Icon} n="down" />
+    </button>
+    ${open && html`<ul class="combo-list" role="listbox" aria-multiselectable="true">
+      ${options.map((o) => html`<li key=${o.value}><label class="check-line">
+        <input type="checkbox" checked=${value.includes(o.value)} onChange=${() => onToggle(o.value)} />${o.label}</label></li>`)}
+    </ul>`}
+  </div>`;
+}
+
 function Combobox({ items, value, onChange, label, sub, placeholder, onCreate, href }) {
   const selected = value != null ? items.find((i) => i.id === value) : null;
   const [q, setQ] = useState('');
@@ -1098,7 +1128,7 @@ function TeamTile() {
   if (users.length < 2) return null;
   const open = cards.filter((c) => !c.archived);
   const fresh = open.filter((c) => idx.isNew(c)).sort(byUpdatedDesc);
-  const elsewhere = open.filter((c) => c.assignee && c.assignee.toLowerCase() !== me
+  const elsewhere = open.filter((c) => assigneesOf(c).length > 0 && !assigneesOf(c).includes(me)
     && stageKind(idx.stage.get(c.stage_id)) !== 'done').sort(byUpdatedDesc);
   return html`<section class="tile">
     <h2>Team</h2>
@@ -1115,8 +1145,8 @@ function Overview() {
   const { cards, meetings, idx, me } = useApp();
   const [showAll, setShowAll] = useState({});
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
-  // Was jemand anderem zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
-  const open = cards.filter((c) => !c.archived && (!c.assignee || c.assignee.toLowerCase() === me));
+  // Was nur anderen zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
+  const open = cards.filter((c) => !c.archived && (assigneesOf(c).length === 0 || assigneesOf(c).includes(me)));
   const todo = open.filter((c) => kind(c) === 'todo' || kind(c) === 'doing');
   const waiting = open.filter((c) => kind(c) === 'waiting').sort((a, b) => ts(a.updated_at) - ts(b.updated_at));
 
@@ -1411,14 +1441,16 @@ function CardBadges({ card }) {
   </span>`;
 }
 
-// Kleine Hinweise an Karten: neu seit dem letzten Öffnen, zuständig ist jemand anderes
+// Kleine Hinweise an Karten: neu seit dem letzten Öffnen, wer außer mir zuständig ist
 function TeamMarks({ card }) {
   const { idx, me, users } = useApp();
   if (users.length < 2) return null;
-  const other = card.assignee && card.assignee.toLowerCase() !== me ? idx.userName.get(card.assignee.toLowerCase()) || card.assignee : null;
+  const name = (e) => (e === me ? 'Du' : idx.userName.get(e) || e);
+  const all = assigneesOf(card);
+  const others = all.filter((e) => e !== me).map(name);
   return html`${idx.mentionedMe(card) && html`<span class="badge mention-badge" title="Du wurdest in einer Notiz erwähnt">@ dich</span>`}
     ${idx.isNew(card) && html`<span class="badge new" title="Jemand anderes hat seit deinem letzten Öffnen etwas geändert">Neu</span>`}
-    ${other && html`<span class="badge assignee" title=${`Zuständig: ${other}`}>${other.split(' ')[0]}</span>`}`;
+    ${others.length > 0 && html`<span class="badge assignee" title=${`Zuständig: ${all.map(name).join(', ')}`}>${others.map((n) => n.split(' ')[0]).join(', ')}</span>`}`;
 }
 
 function CardItem({ card, dragging, onDragStart, onDragEnd }) {
@@ -1505,6 +1537,7 @@ function historyText(e, idx) {
     case 'dringlichkeit': return d ? `hat die Dringlichkeit auf „${PRIO[d]?.label || d}“ gesetzt` : 'hat die Dringlichkeit entfernt';
     case 'faellig': return d ? `hat „fällig am ${new Date(d + 'T12:00').toLocaleDateString('de-DE')}“ gesetzt` : 'hat die Fälligkeit entfernt';
     case 'zustaendig': return d ? `hat ${idx.userName.get(d.toLowerCase()) || d} zuständig gemacht` : 'hat die Zuständigkeit entfernt';
+    case 'nicht_zustaendig': return `hat ${idx.userName.get((d || '').toLowerCase()) || d} als zuständig entfernt`;
     case 'titel': return `hat den Titel geändert: „${d}“`;
     case 'projekt': return `hat sie ins Projekt „${d}“ verschoben`;
     case 'archiv': return d === 'ja' ? 'hat sie archiviert' : 'hat sie wiederhergestellt';
@@ -1528,8 +1561,8 @@ function CardSheet({ id, query }) {
   const firstStage = (pid) => stages.filter((s) => s.project_id === pid).sort(bySort)[0]?.id ?? null;
   const [form, setForm] = useState(() => {
     if (card) {
-      const { title, project_id, stage_id, person_id, org_id, priority, due_date, assignee } = card;
-      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null, due_date: due_date ?? null, assignee: assignee ?? null };
+      const { title, project_id, stage_id, person_id, org_id, priority, due_date } = card;
+      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null, due_date: due_date ?? null, assignees: assigneesOf(card) };
     }
     const pid = Number(query.get('projekt')) || Number(ls.get('crm-project')) || projects[0]?.id;
     const person = idx.person.get(Number(query.get('kontakt')));
@@ -1541,7 +1574,7 @@ function CardSheet({ id, query }) {
       org_id: Number(query.get('firma')) || person?.org_id || null,
       priority: null,
       due_date: null,
-      assignee: null,
+      assignees: [],
     };
   });
   const [busy, setBusy] = useState(false);
@@ -1558,9 +1591,9 @@ function CardSheet({ id, query }) {
   }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date', 'assignee'];
+  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date', 'assignees'];
   const fromMeeting = card?.meeting_id ? idx.meeting.get(card.meeting_id) : null;
-  const dirty = !card || fields.some((k) => (form[k] ?? null) !== (card[k] ?? null));
+  const dirty = !card || fields.some((k) => !sameValue(form[k], k === 'assignees' ? assigneesOf(card) : card[k]));
   const projStages = stages.filter((s) => s.project_id === form.project_id).sort(bySort);
 
   function changeProject(pid) {
@@ -1620,11 +1653,14 @@ function CardSheet({ id, query }) {
     } catch { /* fail */ }
   }
   const sharedNames = shares.map((x) => idx.userName.get(x.email.toLowerCase()) || x.email);
-  // Zuständig: wird sofort gespeichert. Sieht die Person die Karte noch nicht, wird sie nur nach Rückfrage geteilt.
-  async function pickAssignee(email) {
-    set('assignee', email);
+  // Zuständig: mehrere möglich, jedes Häkchen wird sofort gespeichert.
+  // Sieht eine neu eingetragene Person die Karte noch nicht, wird sie nur nach Rückfrage geteilt.
+  async function toggleAssignee(email) {
+    const list = form.assignees.includes(email) ? form.assignees.filter((x) => x !== email) : [...form.assignees, email];
+    set('assignees', list);
     if (!card) return;
-    await actions.patch('cards', card.id, { assignee: email });
+    await actions.patch('cards', card.id, { assignees: list });
+    if (!list.includes(email)) return;
     const u = users.find((x) => x.email === email);
     if (!isGuest && ownProject && u && !idx.visibleFor(card, email)
         && confirm(`${u.name} sieht diese Karte noch nicht. Für ${u.name} freigeben?`)) {
@@ -1634,6 +1670,9 @@ function CardSheet({ id, query }) {
       } catch { /* fail */ }
     }
   }
+  // Ich zuerst, dann alle anderen Nutzer nach Namen
+  const assigneeOptions = [...users].sort((a, b) => (b.email === me) - (a.email === me) || a.name.localeCompare(b.name, 'de'))
+    .map((u) => ({ value: u.email, label: u.email === me ? `${u.name} (ich)` : u.name, short: u.email === me ? 'Ich' : u.name }));
   const history = card ? idx.historyOf.get(card.id) || [] : [];
   const guestProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
   const person = idx.person.get(form.person_id);
@@ -1678,11 +1717,7 @@ function CardSheet({ id, query }) {
           <input type="date" value=${form.due_date || ''} onInput=${(e) => set('due_date', e.target.value || null)} /></label>
       </div>
       ${users.length > 1 && html`<div class="field"><span>Zuständig</span>
-        <div class="seg wrap">
-          <button type="button" class=${'seg-btn' + (!form.assignee ? ' on' : '')} onClick=${() => pickAssignee(null)}>Niemand</button>
-          ${users.map((u) => html`<button type="button" key=${u.email} class=${'seg-btn' + (form.assignee === u.email ? ' on' : '')}
-            onClick=${() => pickAssignee(u.email)}>${u.email === me ? 'Ich' : u.name}</button>`)}
-        </div></div>`}
+        <${MultiPick} options=${assigneeOptions} value=${form.assignees} onToggle=${toggleAssignee} empty="Niemand" /></div>`}
       ${fromMeeting && html`<p class="meta">Aus dem Meeting <a href=${`#/meeting/${fromMeeting.id}`}>${fromMeeting.title}</a> vom ${shortDate(fromMeeting.held_at)}</p>`}
       ${isGuest ? html`${(person || org) && html`<div class="field"><span>Kontakt</span>
         <p class="small">${[person?.name, org?.name].filter(Boolean).join(' · ')}</p>
@@ -1746,7 +1781,7 @@ function GuestHome() {
   const list = cards.filter((c) => !c.archived).sort(byUpdatedDesc);
   const owners = users.filter((u) => u.role === 'owner').map((u) => u.name).join(', ');
   const mine = list.filter((c) => idx.mentionedMe(c)
-    || (c.assignee && c.assignee.toLowerCase() === me && stageKind(idx.stage.get(c.stage_id)) !== 'done'));
+    || (assigneesOf(c).includes(me) && stageKind(idx.stage.get(c.stage_id)) !== 'done'));
   const fullProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
   const byProject = new Map();
   list.forEach((c) => {
