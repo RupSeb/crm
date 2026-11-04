@@ -1284,6 +1284,36 @@ function MultiField({ label, type, values, onChange }) {
   </div>`;
 }
 
+// Alle Labels aus Kontakten, Firmen und Deals, häufigste zuerst, damit überall dieselben Begriffe zur Wahl stehen
+function useAllLabels() {
+  const { persons, organizations, cards } = useApp();
+  return useMemo(() => countLabels([...persons, ...organizations, ...cards]).map(([l]) => l), [persons, organizations, cards]);
+}
+
+// Labels direkt auf der Seite vergeben und entfernen, ohne das Bearbeiten-Fenster.
+// „+ Label“ schlägt vorhandene Begriffe vor, jeder neue Begriff geht auch.
+function InlineLabels({ value, onChange }) {
+  const all = useAllLabels();
+  const [adding, setAdding] = useState(false);
+  const [q, setQ] = useState('');
+  const listId = useMemo(() => `labels-${Math.random().toString(36).slice(2)}`, []);
+  const add = () => {
+    const l = q.trim();
+    setQ('');
+    setAdding(false);
+    if (l && !value.includes(l)) onChange([...value, l]);
+  };
+  return html`<div class="chips inline-labels">
+    ${value.map((l) => html`<span class="chip" key=${l}>${l}<button type="button" class="chip-x" title=${`„${l}“ entfernen`}
+      aria-label=${`Label ${l} entfernen`} onClick=${() => onChange(value.filter((x) => x !== l))}>×</button></span>`)}
+    ${adding ? html`<input class="chip-input" list=${listId} value=${q} placeholder="Label" ref=${(el) => el?.focus()}
+        onInput=${(e) => setQ(e.target.value)} onBlur=${add}
+        onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } if (e.key === 'Escape') { e.stopPropagation(); setQ(''); setAdding(false); } }} />
+      <datalist id=${listId}>${all.filter((l) => !value.includes(l)).map((l) => html`<option key=${l} value=${l} />`)}</datalist>`
+    : html`<button type="button" class="chip dashed label-add" onClick=${() => setAdding(true)}>+ Label</button>`}
+  </div>`;
+}
+
 function LabelPicker({ all, value, onChange }) {
   const [q, setQ] = useState('');
   const options = [...new Set([...all, ...value])];
@@ -1541,6 +1571,7 @@ function TodoRow({ card, waiting, follow }) {
 function Board({ projectId }) {
   const { projects, stages, cards, idx, isMobile, isGuest, actions, session } = useApp();
   const [q, setQ] = useState('');
+  const [labelPick, setLabel] = useStored('crm-l-board', '');
   const [dragId, setDragId] = useState(null);
   const [over, setOver] = useState(null);
   const [showAll, setShowAll] = useState({});
@@ -1573,8 +1604,12 @@ function Board({ projectId }) {
     </div>`;
   }
 
-  const visible = cards.filter((c) => c.project_id === project.id && !c.archived
-    && matches(q, c.title, idx.person.get(c.person_id)?.name || '', idx.org.get(c.org_id)?.name || ''));
+  const projectCards = cards.filter((c) => c.project_id === project.id && !c.archived);
+  // Label-Filter nur mit Labels, die es in diesem Projekt gibt
+  const boardLabels = countLabels(projectCards);
+  const label = boardLabels.some(([l]) => l === labelPick) ? labelPick : '';
+  const visible = projectCards.filter((c) => (!label || (c.labels || []).includes(label))
+    && matches(q, c.title, idx.person.get(c.person_id)?.name || '', idx.org.get(c.org_id)?.name || '', c.labels || []));
   const byStage = new Map(cols.map((s) => [s.id, []]));
   visible.forEach((c) => byStage.get(c.stage_id)?.push(c));
   byStage.forEach((l) => l.sort(byUpdatedDesc));
@@ -1629,6 +1664,7 @@ function Board({ projectId }) {
   </div>`;
   const search = html`<${SearchBox} value=${q} onInput=${setQ} placeholder="Aufgaben durchsuchen" />`;
   const share = html`<${ProjectShare} project=${project} />`;
+  const labelFilter = boardLabels.length > 0 && html`<${LabelFilter} labels=${boardLabels} value=${label} onChange=${setLabel} />`;
 
   const cardList = (s, list) => {
     const limit = s.is_done && !showAll[s.id] && !q ? 15 : Infinity;
@@ -1647,6 +1683,7 @@ function Board({ projectId }) {
       ${projectTabs}
       ${search}
       ${share}
+      ${labelFilter}
       <div class="stage-tabs">
         ${cols.map((s) => html`<button key=${s.id} class=${'stab' + (s.id === active.id ? ' on' : '')}
           onClick=${() => (s.id === active.id && editCols ? editStage(s) : setMobileStage(s.id))}
@@ -1661,6 +1698,7 @@ function Board({ projectId }) {
 
   return html`<div class="board-page">
     <div class="board-head">${projectTabs}${search}${share}</div>
+    ${labelFilter}
     <div class="board" style=${`--cols:${cols.length}`} onDragOver=${edgeScroll}>
       ${cols.map((s) => html`<section key=${s.id} class=${'column' + (over === s.id ? ' over' : '')}
           onDragOver=${(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (over !== s.id) setOver(s.id); }}
@@ -1720,6 +1758,7 @@ function CardItem({ card, dragging, onDragStart, onDragEnd }) {
       onDragEnd=${onDragEnd}>
     <div class="card-title">${card.title}</div>
     ${meta && html`<div class="card-meta">${meta}</div>`}
+    ${(card.labels || []).length > 0 && html`<div class="card-labels">${card.labels.slice(0, 3).map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
     <div class="card-foot"><${CardBadges} card=${card} /><${TeamMarks} card=${card} />
       ${idx.filesOf.get(card.id) > 0 && html`<span class="files-mark" title=${`${idx.filesOf.get(card.id)} ${idx.filesOf.get(card.id) === 1 ? 'Datei' : 'Dateien'}`}>
         <${Icon} n="clip" />${idx.filesOf.get(card.id)}</span>`}
@@ -1833,7 +1872,8 @@ function CardSheet({ id, query }) {
   const [form, setForm] = useState(() => {
     if (card) {
       const { title, project_id, stage_id, person_id, org_id, priority, due_date } = card;
-      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null, due_date: due_date ?? null, assignees: assigneesOf(card) };
+      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null, due_date: due_date ?? null,
+        assignees: assigneesOf(card), labels: card.labels || [] };
     }
     const pid = Number(query.get('projekt')) || Number(ls.get('crm-project')) || projects[0]?.id;
     const person = idx.person.get(Number(query.get('kontakt')));
@@ -1847,6 +1887,7 @@ function CardSheet({ id, query }) {
       priority: null,
       due_date: null,
       assignees: [],
+      labels: [],
     };
   });
   const [busy, setBusy] = useState(false);
@@ -1890,9 +1931,14 @@ function CardSheet({ id, query }) {
   }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date', 'assignees'];
+  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date', 'assignees', 'labels'];
   const fromMeeting = card?.meeting_id ? idx.meeting.get(card.meeting_id) : null;
-  const dirty = !card || fields.some((k) => !sameValue(form[k], k === 'assignees' ? assigneesOf(card) : card[k]));
+  const dirty = !card || fields.some((k) => !sameValue(form[k], k === 'assignees' ? assigneesOf(card) : k === 'labels' ? card.labels || [] : card[k]));
+  // Labels werden wie Zuständig sofort gespeichert
+  function setLabels(labels) {
+    set('labels', labels);
+    if (card) actions.patch('cards', card.id, { labels });
+  }
   const projStages = stages.filter((s) => s.project_id === form.project_id).sort(bySort);
 
   function changeProject(pid) {
@@ -2036,6 +2082,7 @@ function CardSheet({ id, query }) {
       </div>
       ${users.length > 1 && html`<div class="field"><span>Zuständig</span>
         <${MultiPick} options=${assigneeOptions} value=${form.assignees} onToggle=${toggleAssignee} empty="Niemand" /></div>`}
+      <div class="field"><span>Labels</span><${InlineLabels} value=${form.labels} onChange=${setLabels} /></div>
       ${fromMeeting && html`<p class="meta">Aus dem Meeting <a href=${`#/meeting/${fromMeeting.id}`}>${fromMeeting.title}</a> vom ${shortDate(fromMeeting.held_at)}</p>`}
       ${isGuest ? html`${(person || org) && html`<div class="field"><span>Kontakt</span>
         <p class="small">${[person?.name, org?.name].filter(Boolean).join(' · ')}</p>
@@ -3280,7 +3327,9 @@ function PersonPage({ person: p }) {
       <div class="detail-title">
         <h1>${p.name}</h1>
         ${org && html`<a class="sub-link" href=${`#/firma/${org.id}`}>${org.name}</a>`}
-        ${p.labels.length > 0 && html`<div class="chips">${p.labels.map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
+        ${idx.ownsRow(p) ? html`<${InlineLabels} value=${p.labels}
+          onChange=${(labels) => actions.save('persons', { id: p.id, labels }).catch(() => {})} />`
+    : p.labels.length > 0 && html`<div class="chips">${p.labels.map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
         ${sug.length > 0 && html`<div class="chips suggest">
           <span class="suggest-hint">Vorschlag</span>
           ${sug.map((l) => html`<button key=${l} class="chip toggle dashed" title="Label übernehmen" onClick=${() => takeLabel(l)}><${Icon} n="plus" />${l}</button>`)}
@@ -3589,7 +3638,7 @@ function PersonForm({ person }) {
   const nameRef = useRef(null);
   useEffect(() => { if (!person) nameRef.current?.focus(); }, []);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const allLabels = useMemo(() => countLabels(persons).map(([l]) => l), [persons]);
+  const allLabels = useAllLabels();
   const close = () => back(person ? `#/kontakt/${person.id}` : '#/kontakte');
 
   async function submit(e) {
@@ -3693,7 +3742,7 @@ function OrgsList() {
 }
 
 function OrgPage({ org: o }) {
-  const { persons, cards, idx } = useApp();
+  const { persons, cards, idx, actions } = useApp();
   if (!o) return html`<${NotFound} what="Firma" href="#/firmen" />`;
   const people = persons.filter((p) => p.org_id === o.id).sort(byName);
   const ocards = cards.filter((c) => c.org_id === o.id);
@@ -3704,7 +3753,9 @@ function OrgPage({ org: o }) {
       <div class="detail-title">
         <h1>${o.name}</h1>
         ${o.address && html`<div class="sub-link">${o.address}</div>`}
-        ${o.labels.length > 0 && html`<div class="chips">${o.labels.map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
+        ${idx.ownsRow(o) ? html`<${InlineLabels} value=${o.labels}
+          onChange=${(labels) => actions.save('organizations', { id: o.id, labels }).catch(() => {})} />`
+    : o.labels.length > 0 && html`<div class="chips">${o.labels.map((l) => html`<span class="chip" key=${l}>${l}</span>`)}</div>`}
       </div>
       <${ClaudeButton} prompt=${claudeAsk.org(o)} cls="btn" />
       <a class="btn" href=${`#/firma/${o.id}/bearbeiten`}>Bearbeiten</a>
@@ -3748,7 +3799,7 @@ function OrgForm({ org }) {
   const nameRef = useRef(null);
   useEffect(() => { if (!org) nameRef.current?.focus(); }, []);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const allLabels = useMemo(() => countLabels(organizations).map(([l]) => l), [organizations]);
+  const allLabels = useAllLabels();
   const close = () => back(org ? `#/firma/${org.id}` : '#/firmen');
 
   async function submit(e) {
