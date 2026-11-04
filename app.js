@@ -211,6 +211,7 @@ const ICONS = {
   back: '<path d="M15 5l-7 7 7 7"/>',
   next: '<path d="M9 5l7 7-7 7"/>',
   down: '<path d="M5 9l7 7 7-7"/>',
+  reply: '<path d="M10 7l-5 5 5 5"/><path d="M5 12h9a5 5 0 015 5v1.5"/>',
   clip: '<path d="M20.5 11.5l-8.4 8.4a5 5 0 01-7.1-7.1l8.6-8.6a3.3 3.3 0 014.7 4.7l-8.6 8.6a1.7 1.7 0 01-2.4-2.4l7.9-7.9"/>',
   share: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0111 0M16 5a3 3 0 010 6M20.5 20a5.5 5.5 0 00-3.5-5.1"/>',
   lock: '<rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 017 0v3"/>',
@@ -1625,7 +1626,8 @@ function CardSheet({ id, query }) {
     const pid = Number(query.get('projekt')) || Number(ls.get('crm-project')) || projects[0]?.id;
     const person = idx.person.get(Number(query.get('kontakt')));
     return {
-      title: '',
+      // Aus einer Mail angelegt: Betreff als Vorschlag für den Titel
+      title: query.get('titel') || '',
       project_id: pid,
       stage_id: Number(query.get('spalte')) || firstStage(pid),
       person_id: person?.id ?? null,
@@ -2785,23 +2787,39 @@ function MeetingsPanel({ ids }) {
 // ---------------------------------------------------------------------------
 // E-Mails (kommen über tools/mail_abgleich.py aus den Postfächern)
 // ---------------------------------------------------------------------------
-const EMAIL_COLUMNS = 'id,thread_id,mailbox,gmail_id,direction,from_email,from_name,to_emails,cc_emails,subject,sent_at,attachments';
+const EMAIL_COLUMNS = 'id,thread_id,mailbox,gmail_id,direction,from_email,from_name,to_emails,cc_emails,subject,snippet,sent_at,attachments';
+
+// Datum wie in Gmail: heute die Uhrzeit, in diesem Jahr Tag und Monat, sonst das ganze Datum
+function mailDate(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString('de-DE', { day: 'numeric', month: 'short' });
+  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
 // Ab hier beginnt meist der zitierte Verlauf einer Antwort
 const QUOTE_START = /^(Am .{4,160}schrieb.{0,120}:|On .{4,160}wrote:|-{2,}\s*(Original Message|Ursprüngliche Nachricht)|Von: .+|From: .+|>.*)\s*$/m;
 
 function EmailsPanel({ personIds }) {
-  const { actions } = useApp();
+  const { actions, idx } = useApp();
   const [mails, setMails] = useState(null);
+  const [people, setPeople] = useState(new Map());
   const [limit, setLimit] = useState(10);
   const key = personIds.join(',');
   useEffect(() => {
     let alive = true;
     setMails(null);
     (async () => {
-      const links = personIds.length ? await db.listIn('email_persons', 'person_id', personIds, 'email_id') : [];
+      const links = personIds.length ? await db.listIn('email_persons', 'person_id', personIds, 'email_id,person_id') : [];
       const ids = [...new Set(links.map((l) => l.email_id))];
       const rows = ids.length ? await db.listIn('emails', 'id', ids, EMAIL_COLUMNS) : [];
-      if (alive) setMails(rows.sort((a, b) => ts(b.sent_at) - ts(a.sent_at)));
+      // Kontakt je Mail für die Knöpfe (Aufgabe, Termin, Kontakt)
+      const byMail = new Map();
+      links.forEach((l) => {
+        const p = idx.person.get(l.person_id);
+        if (p) byMail.set(l.email_id, [...(byMail.get(l.email_id) || []), p]);
+      });
+      if (alive) { setPeople(byMail); setMails(rows.sort((a, b) => ts(b.sent_at) - ts(a.sent_at))); }
     })().catch((e) => { actions.fail(e); if (alive) setMails([]); });
     return () => { alive = false; };
   }, [key]);
@@ -2809,7 +2827,7 @@ function EmailsPanel({ personIds }) {
   if (mails && mails.length === 0) return null;
   return html`<section class="notes mails">
     <h3>E-Mails ${mails && html`<span class="count">${mails.length}</span>`}</h3>
-    ${mails === null ? html`<p class="muted small">Lädt …</p>` : mails.slice(0, limit).map((m) => html`<${EmailItem} key=${m.id} mail=${m} />`)}
+    ${mails === null ? html`<p class="muted small">Lädt …</p>` : mails.slice(0, limit).map((m) => html`<${EmailItem} key=${m.id} mail=${m} people=${people.get(m.id)} />`)}
     ${mails && mails.length > limit && html`<button class="btn link sm" onClick=${() => setLimit(limit + 20)}>Ältere anzeigen</button>`}
   </section>`;
 }
@@ -2917,27 +2935,51 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
     }
   }
   const out = m.direction === 'out';
-  const who = out ? `an ${(m.to_emails || []).join(', ')}` : (m.from_name || m.from_email);
+  const to = m.to_emails || [];
+  // Wie in Gmail: links wer schreibt bzw. „An: …“, daneben Betreff und Textanfang, rechts das Datum
+  const who = out ? `An: ${people[0]?.name || to[0] || ''}${to.length > 1 ? ` +${to.length - 1}` : ''}` : (m.from_name || m.from_email);
+  const snippet = m.snippet ?? String(m.body || '').replace(/\s+/g, ' ').slice(0, 180);
   const cut = body ? body.search(QUOTE_START) : -1;
   const main = body && cut > 0 ? body.slice(0, cut).trimEnd() : body;
   const quote = body && cut > 0 ? body.slice(cut) : '';
   const gmailUrl = m.gmail_id ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(m.mailbox)}#all/${m.gmail_id}` : null;
+  const person = people[0];
+  const taskHref = person ? `#/karte/neu?kontakt=${person.id}&titel=${encodeURIComponent(m.subject || '')}` : null;
+  const files = m.attachments || [];
   return html`<article class=${'mail' + (open ? ' open' : '')}>
-    <button type="button" class="mail-head" onClick=${toggle} aria-expanded=${open}>
+    <div class="mail-row" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}
+      onKeyDown=${(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } }}>
       <span class=${'mail-dir ' + (out ? 'out' : 'in')} title=${out ? 'Gesendet' : 'Empfangen'}>${out ? '↗' : '↘'}</span>
-      <span class="mail-main">
+      <span class="mail-from">${who}</span>
+      <span class="mail-line">
+        ${showBox && html`<span class="mail-box">${m.mailbox.split('@')[1] || m.mailbox}</span>`}
         <span class="mail-subject">${m.subject || '(ohne Betreff)'}</span>
-        <span class="mail-meta">${who} · ${fullDate(m.sent_at)}${showBox ? ` · ${m.mailbox.split('@')[1] || m.mailbox}` : ''}</span>
+        ${snippet && html`<span class="mail-snippet"> – ${snippet}</span>`}
       </span>
-    </button>
+      <span class="mail-clip">${files.length > 0 && html`<span title=${files.join(', ')}><${Icon} n="clip" /></span>`}</span>
+      <span class="mail-end">
+        <span class="mail-date" title=${fullDate(m.sent_at)}>${mailDate(m.sent_at)}</span>
+        <span class="mail-actions" onClick=${(e) => e.stopPropagation()}>
+          ${gmailUrl && html`<a class="icon-btn sm" href=${gmailUrl} target="_blank" rel="noopener" title="In Gmail öffnen und antworten" aria-label="In Gmail antworten"><${Icon} n="reply" /></a>`}
+          ${taskHref && html`<a class="icon-btn sm" href=${taskHref} title=${`Aufgabe mit ${person.name} anlegen`} aria-label="Aufgabe anlegen"><${Icon} n="board" /></a>`}
+          ${person && html`<a class="icon-btn sm" href=${`#/termin/neu?gast=${person.id}`} title=${`Termin mit ${person.name}`} aria-label="Termin einladen"><${Icon} n="calendar" /></a>`}
+          ${person && html`<a class="icon-btn sm" href=${`#/kontakt/${person.id}`} title=${`Kontakt ${person.name} öffnen`} aria-label="Kontakt öffnen"><${Icon} n="person" /></a>`}
+        </span>
+      </span>
+    </div>
     ${open && html`<div class="mail-body">
+      <p class="meta">${out ? `An ${to.join(', ')}` : `Von ${m.from_name ? `${m.from_name} <${m.from_email}>` : m.from_email}`} · ${fullDate(m.sent_at)} · Postfach ${m.mailbox}</p>
       ${body === null ? html`<p class="muted small">Lädt …</p>` : html`
         <div class="mail-text">${main || '(kein Text)'}</div>
         ${quote && html`<button class="btn link sm" onClick=${() => setShowQuote(!showQuote)}>${showQuote ? 'Verlauf ausblenden' : 'Zitierten Verlauf anzeigen'}</button>`}
         ${quote && showQuote && html`<div class="mail-text quote">${quote}</div>`}`}
-      ${(m.attachments || []).length > 0 && html`<p class="meta">Anhänge: ${m.attachments.join(', ')}</p>`}
-      ${people.length > 0 && html`<p class="meta">Kontakt: ${people.map((p, i) => html`${i ? ', ' : ''}<a key=${p.id} href=${`#/kontakt/${p.id}`}>${p.name}</a>`)}</p>`}
-      <p class="meta">Postfach ${m.mailbox}${gmailUrl ? html` · <a href=${gmailUrl} target="_blank" rel="noopener">In Gmail öffnen und antworten</a>` : ''}</p>
+      ${files.length > 0 && html`<p class="meta"><${Icon} n="clip" /> Anhänge: ${files.join(', ')}</p>`}
+      <div class="mail-buttons">
+        ${gmailUrl && html`<a class="btn sm" href=${gmailUrl} target="_blank" rel="noopener"><${Icon} n="reply" />In Gmail antworten</a>`}
+        ${taskHref && html`<a class="btn sm" href=${taskHref}><${Icon} n="board" />Aufgabe anlegen</a>`}
+        ${person && html`<a class="btn sm" href=${`#/termin/neu?gast=${person.id}`}><${Icon} n="calendar" />Termin einladen</a>`}
+        ${people.map((p) => html`<a key=${p.id} class="btn sm ghost" href=${`#/kontakt/${p.id}`}><${Icon} n="person" />${p.name}</a>`)}
+      </div>
     </div>`}
   </article>`;
 }

@@ -492,23 +492,56 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .panel-sub { margin: 8px 0 4px; font: 500 10.5px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 
 /* ---------- E-Mails ---------- */
-.notes.mails { margin-top: 16px; }
+.notes.mails { margin-top: 16px; container-type: inline-size; }
 .mail { border-top: 1px solid var(--border); }
-.mail-head {
-  display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 0;
-  border: 0; background: none; color: var(--text); text-align: left; cursor: pointer; font: inherit;
+/* Eine Zeile je Mail wie in Gmail: Richtung, Absender, Betreff mit Textanfang, Büroklammer, Datum rechts */
+.mail-row {
+  display: grid; grid-template-columns: 24px minmax(110px, 190px) minmax(0, 1fr) 18px minmax(56px, auto);
+  grid-template-areas: "dir from line clip end"; align-items: center; column-gap: 12px;
+  padding: 8px 8px; margin: 0 -8px; border-radius: 8px; cursor: pointer; font-size: 14px;
 }
-.mail-head:hover .mail-subject { color: var(--gold-l); }
+.mail-row:hover { background: var(--hover); }
+.mail-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mail-dir {
-  flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  grid-area: dir; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
   font-size: 13px; background: var(--hover); color: var(--muted);
 }
 .mail-dir.out { background: var(--accent-soft); color: var(--gold-l); }
-.mail-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.mail-subject { font-weight: 550; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mail.open .mail-subject { white-space: normal; }
-.mail-meta { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mail-body { padding: 0 0 12px 34px; }
+.mail-from { grid-area: from; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-line { grid-area: line; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-subject { font-weight: 550; }
+.mail-snippet { color: var(--muted); }
+.mail-box {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); font-size: 11px; line-height: 17px;
+}
+.mail-clip { grid-area: clip; display: inline-flex; color: var(--muted); }
+.mail-clip .ico { width: 15px; height: 15px; }
+.mail-end { grid-area: end; display: flex; justify-content: flex-end; }
+.mail-date { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.mail-actions { display: none; gap: 2px; }
+.mail-actions .icon-btn { width: 30px; height: 30px; }
+.mail-actions .icon-btn .ico { width: 16px; height: 16px; }
+@media (hover: hover) {
+  .mail-row:hover .mail-actions { display: flex; }
+  .mail-row:hover .mail-date:has(+ .mail-actions > *) { display: none; }
+}
+.mail.open .mail-line { white-space: normal; }
+.mail-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.mail-buttons .btn .ico { width: 14px; height: 14px; }
+/* Schmal (Handy, Notizen-Spalte): zwei Zeilen wie die Gmail-App, Absender und Datum oben, darunter Betreff und Text */
+@container (max-width: 560px) {
+  .mail-row {
+    grid-template-columns: 24px minmax(0, 1fr) auto; grid-template-areas: "dir from end" "dir line clip";
+    align-items: start; row-gap: 1px; padding: 9px 8px;
+  }
+  .mail-line { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 13.5px; }
+  .mail-clip { align-self: end; }
+  .mail-actions { display: none !important; }
+  .mail-row:hover .mail-date { display: inline !important; }
+}
+.mail-body { padding: 4px 0 14px 36px; }
+.mail-body > .meta:first-child { margin-top: 0; }
 .mail-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; }
 .mail-text.quote { margin-top: 8px; padding-left: 10px; border-left: 2px solid var(--border-strong); color: var(--muted); font-size: 13px; }
 
