@@ -212,6 +212,7 @@ const ICONS = {
   next: '<path d="M9 5l7 7-7 7"/>',
   down: '<path d="M5 9l7 7 7-7"/>',
   spark: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
+  camera: '<path d="M4 8.5A1.5 1.5 0 015.5 7h2.3l1.4-2h5.6l1.4 2h2.3A1.5 1.5 0 0120 8.5v9a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 17.5z"/><circle cx="12" cy="12.8" r="3.3"/>',
   reply: '<path d="M10 7l-5 5 5 5"/><path d="M5 12h9a5 5 0 015 5v1.5"/>',
   clip: '<path d="M20.5 11.5l-8.4 8.4a5 5 0 01-7.1-7.1l8.6-8.6a3.3 3.3 0 014.7 4.7l-8.6 8.6a1.7 1.7 0 01-2.4-2.4l7.9-7.9"/>',
   share: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0111 0M16 5a3 3 0 010 6M20.5 20a5.5 5.5 0 00-3.5-5.1"/>',
@@ -812,6 +813,7 @@ function Main({ session }) {
     const p = sec === 'kontakt' && idx.person.get(Number(a));
     const o = sec === 'firma' && idx.org.get(Number(a));
     if (sec === 'kontakte' && a === 'neu') overlay = html`<${PersonForm} key="neu" />`;
+    if (sec === 'kontakte' && a === 'visitenkarte') overlay = html`<${CardScanSheet} key="scan" />`;
     if (p && b === 'bearbeiten') overlay = html`<${PersonForm} key=${'pe' + a} person=${p} />`;
     if (sec === 'firmen' && a === 'neu') overlay = html`<${OrgForm} key="neu" />`;
     if (o && b === 'bearbeiten') overlay = html`<${OrgForm} key=${'oe' + a} org=${o} />`;
@@ -3232,7 +3234,8 @@ function PersonsList() {
 
   return html`<div class="page">
     <${PageHead} title="Kontakte" count=${list.length}
-      action=${!isMobile && html`<a class="btn primary" href="#/kontakte/neu"><${Icon} n="plus" />Kontakt</a>`} />
+      action=${html`<a class="btn" href="#/kontakte/visitenkarte"><${Icon} n="camera" />Visitenkarte</a>
+        ${!isMobile && html`<a class="btn primary" href="#/kontakte/neu"><${Icon} n="plus" />Kontakt</a>`}`} />
     <div class="toolbar">
       <${SearchBox} value=${q} onInput=${setQ} placeholder="Name, Firma, E-Mail, Telefon" />
       <${SortToggle} value=${sort} onChange=${setSort} />
@@ -3318,6 +3321,232 @@ async function deleteLooseNotes(filter) {
   for (const n of notes.filter((x) => !x.card_id && !(filter.person_id ? x.org_id : x.person_id))) {
     await db.remove('notes', n.id);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Visitenkarte: Foto auf dem Gerät lesen (Tesseract.js, lädt erst beim ersten Gebrauch, das Bild verlässt das
+// Gerät nicht), Text auf die Felder verteilen, im Formular prüfen, dann Kontakt und bei Bedarf Firma anlegen.
+// Statt eines Fotos geht auch eingefügter Text, z. B. am iPhone über „Text erkennen“ in der Kamera kopiert.
+// ---------------------------------------------------------------------------
+const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+let tesseractLoad = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  tesseractLoad ||= new Promise((ok, bad) => {
+    const s = document.createElement('script');
+    s.src = TESSERACT_URL;
+    s.onload = () => ok(window.Tesseract);
+    s.onerror = () => { tesseractLoad = null; bad(new Error('Die Texterkennung ließ sich nicht laden. Ist das Gerät online?')); };
+    document.head.appendChild(s);
+  });
+  return tesseractLoad;
+}
+
+// Foto für die Erkennung aufbereiten: auf etwa 1800 Pixel bringen, grau, etwas mehr Kontrast
+async function cardImage(file) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(2.5, 1800 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale);
+  c.height = Math.round(bmp.height * scale);
+  const g = c.getContext('2d');
+  g.drawImage(bmp, 0, 0, c.width, c.height);
+  const img = g.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.max(0, Math.min(255, (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2] - 128) * 1.35 + 128));
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+const COMPANY_FORM_RE = /\b(GmbH|mbH|mbB|AG|SE|UG|KG|OHG|GbR|e\.\s?K\.|e\.\s?V\.|Ltd|Limited|Inc|LLC|B\.V\.|S\.A\.|Holding|Gruppe|Group|Kanzlei|Steuerberatung|Rechtsanw\w*|Consulting|Immobilien|Architekten|Hausverwaltung)\b| & /i;
+const JOB_RE = /(geschäftsführ|inhaber|gründer|founder|\bceo\b|\bcfo\b|\bcto\b|\bcoo\b|director|direktor|leiter|leitung|head of|manager|berater|consultant|vertrieb|sales|partner|referent|assistent|assistant|projekt|account|makler|vorstand|prokurist|spezialist|specialist|engineer|ingenieur|architekt|officer|owner|president|team ?lead|marketing|einkauf|verkauf|associate|analyst|sachbearbeit|kundenbetreuer)/i;
+const FREEMAIL = new Set(['gmail.com', 'googlemail.com', 'gmx.de', 'gmx.net', 'web.de', 't-online.de', 'outlook.com', 'outlook.de',
+  'hotmail.com', 'hotmail.de', 'yahoo.com', 'yahoo.de', 'icloud.com', 'me.com', 'aol.com', 'posteo.de', 'freenet.de', 'mail.de',
+  'proton.me', 'protonmail.com', 'live.com', 'live.de', 'msn.com', 'arcor.de']);
+const umlautPlain = (s) => norm(String(s).replace(/ä/gi, 'ae').replace(/ö/gi, 'oe').replace(/ü/gi, 'ue').replace(/ß/g, 'ss'));
+const hostOf = (u) => String(u || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+
+// Text einer Visitenkarte auf Felder verteilen. Bewusst einfache Regeln, das Formular danach ist zum Korrigieren da.
+function parseCard(raw) {
+  const lines = String(raw).split(/\n+/).map((l) => l.replace(/[|•·]/g, ' ').replace(/\s+/g, ' ').trim()).filter((l) => l.length > 1);
+  const all = lines.join('\n');
+  const emails = [...new Set((all.match(/[a-z0-9._%+-]+ ?@ ?[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}/gi) || []).map((m) => m.replace(/\s/g, '').toLowerCase()))];
+  const email = emails[0] || '';
+  const domain = email.split('@')[1] || '';
+  const ownDomain = domain && !FREEMAIL.has(domain) ? domain : '';
+  const webLine = lines.find((l) => /(www\.|https?:\/\/)/i.test(l) && !l.includes('@')) || '';
+  let website = (webLine.match(/(https?:\/\/)?(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(\/[^\s]*)?/i) || [''])[0]
+    .replace(/^https?:\/\//i, '').replace(/\/$/, '');
+  if (!website && ownDomain) website = `www.${ownDomain}`;
+  // Telefon: mindestens 7 Ziffern, Fax nicht, Mobilnummern (01…, +49 1…) getrennt
+  const phones = [];
+  let mobile = '';
+  for (const l of lines) {
+    if (l.includes('@') || /\bfax\b|telefax/i.test(l)) continue;
+    const m = l.match(/\+?\(?\d[\d ()/.-]{5,}\d/);
+    if (!m) continue;
+    const digits = m[0].replace(/\D/g, '');
+    if (digits.length < 7 || digits.length > 16) continue;
+    const num = m[0].replace(/\s+/g, ' ').trim();
+    const compact = num.replace(/[^\d+]/g, '');
+    if (/mobil|mobile|handy|cell|\bm\s?[.:]/i.test(l) || /^(\+491|00491|01)[5-7]/.test(compact)) mobile ||= num;
+    else if (!phones.includes(num)) phones.push(num);
+  }
+  // Adresse: Zeile mit Postleitzahl und Ort, die Straße steht meist darüber oder davor in derselben Zeile
+  const plzAt = lines.findIndex((l) => /\b(D-)?\d{5} [A-ZÄÖÜ]/.test(l) && !l.includes('@'));
+  let address = '';
+  if (plzAt >= 0) {
+    const prev = lines[plzAt - 1] || '';
+    const street = /(str\.|straße|strasse|weg\b|platz|allee|gasse|ring\b|damm|ufer|markt|\d+ ?[a-z]?$)/i.test(prev)
+      && !prev.includes('@') && !/\d{6,}/.test(prev.replace(/\s/g, '')) && !COMPANY_FORM_RE.test(prev) ? prev : '';
+    address = [street, lines[plzAt]].filter(Boolean).join(', ').replace(/(\d ?[a-z]?) (\d{5} )/, '$1, $2');
+  }
+  let company = lines.find((l) => COMPANY_FORM_RE.test(l) && !l.includes('@') && !/www\./i.test(l) && l !== address) || '';
+  // Name: die Zeile, die am besten zum Teil vor dem @ passt (max.mustermann@ → „Max Mustermann“, s.kraus@ → „Stefan Kraus“)
+  const local = email.split('@')[0].split(/[._-]+/).filter(Boolean);
+  const nameLike = (l) => /^[A-ZÄÖÜ]/.test(l) && !/\d|@|www\.|https?:/i.test(l) && !COMPANY_FORM_RE.test(l) && !JOB_RE.test(l)
+    && l.split(' ').length >= 2 && l.split(' ').length <= 5 && l.length <= 40;
+  const fit = (l) => {
+    const words = umlautPlain(l).replace(/^((dr|prof)\.? )+/, '').split(/[ -]+/);
+    return local.reduce((n, p) => n + (p.length === 1 ? (words[0]?.[0] === umlautPlain(p) ? 1 : 0)
+      : (umlautPlain(l).includes(umlautPlain(p)) ? 2 : 0)), 0);
+  };
+  let name = lines.filter(nameLike).sort((a, b) => fit(b) - fit(a))[0] || '';
+  // NAMEN IN GROSSBUCHSTABEN in normale Schreibweise bringen
+  if (name && name === name.toUpperCase()) name = name.toLowerCase().replace(/(^|[ -])(\p{L})/gu, (m, a, c) => a + c.toUpperCase());
+  const position = lines.find((l) => JOB_RE.test(l) && l !== name && l !== company && !/@|\d{4}/.test(l)) || '';
+  if (!company && ownDomain) company = ownDomain.split('.')[0].replace(/^./, (c) => c.toUpperCase());
+  // Ohne Rechtsform und eigene Domain: die erste übrige Zeile ohne Ziffern ist meist die Firma
+  if (!company) {
+    company = lines.find((l) => l.toLowerCase() !== name.toLowerCase() && l !== position && !/\d|@|www\.|https?:/i.test(l) && l.length <= 50) || '';
+  }
+  return { name, company, position, email, phone: phones[0] || '', mobile, website, address, text: lines.join('\n') };
+}
+
+function CardScanSheet() {
+  const { persons, organizations, actions } = useApp();
+  const [step, setStep] = useState('foto');
+  const [status, setStatus] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [paste, setPaste] = useState('');
+  const [f, setF] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const close = () => back('#/kontakte');
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+
+  async function read(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPreview(URL.createObjectURL(file));
+    setStep('liest');
+    let worker = null;
+    try {
+      setStatus('Bereitet das Foto vor …');
+      const canvas = await cardImage(file);
+      setStatus('Lädt die Texterkennung, beim ersten Mal etwa 10 MB …');
+      const T = await loadTesseract();
+      worker = await T.createWorker(['deu', 'eng'], 1, {
+        logger: (m) => { if (m.status === 'recognizing text') setStatus(`Liest die Karte … ${Math.round(m.progress * 100)} %`); },
+      });
+      const { data } = await worker.recognize(canvas);
+      setF(parseCard(data.text));
+      setStep('pruefen');
+    } catch (err) {
+      actions.fail(err);
+      setStep('foto');
+    } finally { worker?.terminate(); }
+  }
+  function fromText() {
+    if (!paste.trim()) return;
+    setF(parseCard(paste));
+    setStep('pruefen');
+  }
+
+  // Gibt es die Person oder die Firma schon?
+  const email = (f?.email || '').trim().toLowerCase();
+  const dupe = f && persons.find((p) => (email && (p.emails || []).some((x) => x.toLowerCase() === email))
+    || (f.name.trim() && norm(p.name) === norm(f.name.trim())));
+  const org = f && f.company.trim() && organizations.find((o) => norm(o.name) === norm(f.company.trim())
+    || (f.website && o.website && hostOf(o.website) === hostOf(f.website)));
+
+  async function save(merge) {
+    if (!f.name.trim()) return;
+    setBusy(true);
+    try {
+      let orgId = org?.id ?? null;
+      if (!orgId && f.company.trim()) {
+        orgId = (await actions.save('organizations', { name: f.company.trim(), website: f.website.trim() || null,
+          address: f.address.trim() || null, labels: ['Aus Visitenkarte'] })).id;
+      }
+      const phones = [f.phone, f.mobile].map((x) => x.trim()).filter(Boolean);
+      let p;
+      if (merge && dupe) {
+        p = await actions.save('persons', { id: dupe.id,
+          emails: [...new Set([...(dupe.emails || []), ...(email ? [email] : [])])],
+          phones: [...new Set([...(dupe.phones || []), ...phones])],
+          org_id: dupe.org_id ?? orgId });
+      } else {
+        p = await actions.save('persons', { name: f.name.trim(), emails: email ? [email] : [], phones, org_id: orgId, labels: ['Aus Visitenkarte'] });
+      }
+      // Position und Adresse (wenn die Firma schon da war) als Notiz, damit nichts verloren geht
+      const extra = [f.position.trim() && `Position: ${f.position.trim()}`, org && f.address.trim() && `Adresse: ${f.address.trim()}`,
+        !f.company.trim() && f.website.trim() && `Website: ${f.website.trim()}`].filter(Boolean);
+      if (extra.length) {
+        await db.insert('notes', { person_id: p.id, org_id: p.org_id ?? orgId,
+          content: textToHtml(`Von der Visitenkarte (${new Date().toLocaleDateString('de-DE')}):\n${extra.join('\n')}`), source: 'manual', private: false });
+      }
+      actions.notify(merge && dupe ? `${dupe.name} ergänzt.` : `${p.name} angelegt.`);
+      go(`#/kontakt/${p.id}`, true);
+    } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
+  }
+
+  const field = (k, label, type = 'text') => html`<label class="field"><span>${label}</span>
+    <input type=${type} value=${f[k]} autocomplete="off" onInput=${(e) => set(k, e.target.value)} /></label>`;
+  return html`<${Sheet} title="Visitenkarte" onClose=${close}>
+    ${step === 'foto' && html`<section class="form scan">
+      <label class="scan-pick">
+        <input type="file" accept="image/*" capture="environment" hidden onChange=${read} />
+        <${Icon} n="camera" /><strong>Visitenkarte fotografieren</strong>
+        <span class="muted small">Gerade von oben, gut ausgeleuchtet, die Karte füllt das Bild</span>
+      </label>
+      <label class="btn"><input type="file" accept="image/*" hidden onChange=${read} />Foto aus der Mediathek</label>
+      <details class="more"><summary>Oder Text einfügen</summary>
+        <p class="muted small">Am iPhone in der Kamera auf das Text-Symbol tippen, „Alles auswählen“, kopieren und hier einfügen.</p>
+        <label class="field"><textarea rows="6" value=${paste} onInput=${(e) => setPaste(e.target.value)} placeholder="Text der Visitenkarte"></textarea></label>
+        <button type="button" class="btn" disabled=${!paste.trim()} onClick=${fromText}>Felder erkennen</button>
+      </details>
+      <p class="muted small">Die Erkennung läuft auf diesem Gerät, das Foto wird nirgends hochgeladen.</p>
+    </section>`}
+    ${step === 'liest' && html`<section class="form scan">
+      ${preview && html`<img class="scan-preview" src=${preview} alt="Visitenkarte" />`}
+      <p class="muted">${status}</p>
+    </section>`}
+    ${step === 'pruefen' && f && html`<form class="form scan" onSubmit=${(e) => { e.preventDefault(); save(false); }}>
+      ${preview && html`<img class="scan-preview" src=${preview} alt="Visitenkarte" />`}
+      <p class="muted small">Bitte kurz prüfen und korrigieren, die Erkennung macht Fehler.</p>
+      ${field('name', 'Name')}
+      ${field('company', 'Firma')}
+      ${f.company.trim() && html`<p class="muted small scan-hint">${org ? html`Vorhandene Firma: <a href=${`#/firma/${org.id}`}>${org.name}</a>` : 'Firma wird neu angelegt.'}</p>`}
+      ${field('position', 'Position')}
+      ${field('email', 'E-Mail', 'email')}
+      <div class="field-row">${field('phone', 'Telefon', 'tel')}${field('mobile', 'Mobil', 'tel')}</div>
+      ${field('website', 'Website')}
+      ${field('address', 'Adresse')}
+      ${dupe && html`<div class="notice">Es gibt schon <a href=${`#/kontakt/${dupe.id}`}>${dupe.name}</a>${(dupe.emails || []).length ? ` (${dupe.emails[0]})` : ''}.
+        „Ergänzen“ fügt nur neue Mailadresse und Nummern hinzu.</div>`}
+      <div class="form-actions">
+        ${dupe && html`<button type="button" class="btn primary" disabled=${busy} onClick=${() => save(true)}>${dupe.name} ergänzen</button>`}
+        <button class=${'btn' + (dupe ? '' : ' primary')} disabled=${busy || !f.name.trim()}>${dupe ? 'Trotzdem neu anlegen' : 'Kontakt anlegen'}</button>
+        <button type="button" class="btn ghost" onClick=${() => { setF(null); setStep('foto'); }}>Neues Foto</button>
+      </div>
+      <details class="more"><summary>Erkannter Text</summary><pre class="scan-text">${f.text}</pre></details>
+    </form>`}
+  <//>`;
 }
 
 function PersonForm({ person }) {
