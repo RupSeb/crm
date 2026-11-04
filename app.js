@@ -4,7 +4,7 @@ import {
 import DOMPurify from './vendor/purify.js';
 import { db, DEMO, matchesView } from './db.js';
 import { STAGE_NAMES } from './demo.js';
-import { APP_NAME, SUPABASE_URL } from './config.js';
+import { APP_NAME, SUPABASE_URL, PUSH_PUBLIC_KEY } from './config.js';
 
 const PALETTE = ['#7fa7c9', '#d98b4f', '#a9b4ae', '#b08fd6', '#6fb58f', '#d9be90', '#e07a7a'];
 
@@ -592,9 +592,11 @@ function Main({ session }) {
         const now = new Date().toISOString();
         setData((d) => ({ ...d, [table]: d[table].map((x) => (x.id === id ? { ...x, ...fields, updated_at: now } : x)) }));
         try {
-          put(table, await db.update(table, id, fields));
+          const saved = await db.update(table, id, fields);
+          put(table, saved);
           if (table === 'cards') reloadHistory(id);
-        } catch (e) { fail(e); load(); }
+          return saved;
+        } catch (e) { fail(e); load(); return null; }
       },
       reloadHistory,
       // Ist der Claude-Connector gerade verbunden? (20_claude_status.sql)
@@ -970,6 +972,79 @@ function ClaudeSheet({ query }) {
   <//>`;
 }
 
+// Erinnerungen per Push-Mitteilung (21_wiedervorlagen.sql, Funktion „erinnerung“), je Gerät einzuschalten.
+// Am iPhone nur, wenn das CRM als App auf dem Home-Bildschirm liegt.
+const PUSH_OK = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const pushKey = (s) => {
+  const t = s.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(t + '='.repeat((4 - (t.length % 4)) % 4)), (c) => c.charCodeAt(0));
+};
+const deviceName = () => {
+  const u = navigator.userAgent;
+  return /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android'
+    : /Windows/.test(u) ? 'Windows' : /Mac/.test(u) ? 'Mac' : 'Gerät';
+};
+
+function PushSettings() {
+  const { actions } = useApp();
+  const [state, setState] = useState('lädt');
+  const [busy, setBusy] = useState(false);
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const current = async () => (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  useEffect(() => {
+    if (DEMO || !PUSH_OK) { setState('nicht'); return; }
+    if (Notification.permission === 'denied') { setState('blockiert'); return; }
+    current().then((s) => setState(s && Notification.permission === 'granted' ? 'an' : 'aus')).catch(() => setState('aus'));
+  }, []);
+  async function on() {
+    setBusy(true);
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { setState(perm === 'denied' ? 'blockiert' : 'aus'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = (await reg.pushManager.getSubscription())
+        || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushKey(PUSH_PUBLIC_KEY) });
+      const j = sub.toJSON();
+      await db.upsert('push_abos', { endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, geraet: deviceName() }, 'endpoint');
+      setState('an');
+      actions.notify('Erinnerungen sind auf diesem Gerät eingeschaltet. „Test senden“ zeigt, ob sie ankommen.');
+    } catch (e) { actions.fail(e); } finally { setBusy(false); }
+  }
+  async function off() {
+    setBusy(true);
+    try {
+      const sub = await current();
+      if (sub) {
+        for (const row of await db.list('push_abos', { endpoint: sub.endpoint })) await db.remove('push_abos', row.id);
+        await sub.unsubscribe();
+      }
+      setState('aus');
+    } catch (e) { actions.fail(e); } finally { setBusy(false); }
+  }
+  async function test() {
+    setBusy(true);
+    try {
+      const r = await db.pushTest();
+      const bad = (r.geraete || []).filter((g) => g.fehler);
+      actions.notify(bad.length ? `Nicht angekommen auf: ${bad.map((g) => `${g.geraet} (${g.fehler})`).join(', ')}` : 'Mitteilung ist unterwegs.');
+    } catch (e) { actions.fail(e); } finally { setBusy(false); }
+  }
+  return html`<div class="field"><span>Erinnerungen</span>
+    ${state === 'nicht' ? html`<p class="small">${DEMO ? 'Im Demo-Modus gibt es keine Mitteilungen.' : ios
+      ? 'Am iPhone gehen Mitteilungen nur, wenn das CRM als App auf dem Home-Bildschirm liegt: in Safari Teilen → „Zum Home-Bildschirm“, das CRM von dort öffnen und hier einschalten.'
+      : 'Dieser Browser kann keine Mitteilungen empfangen.'}</p>`
+    : state === 'blockiert' ? html`<p class="small">Mitteilungen sind für das CRM blockiert. In den Einstellungen des Browsers oder des iPhones für das CRM erlauben, dann hier einschalten.</p>`
+      : html`<p class="small">${state === 'an' ? 'Auf diesem Gerät eingeschaltet.' : 'Auf diesem Gerät aus.'}
+        Mo bis Fr um 7:30 Uhr kommt eine Mitteilung, wenn Wiedervorlagen fällig sind, sonst nichts.</p>
+      <div class="form-actions">
+        ${state === 'an' ? html`
+          <button type="button" class="btn" disabled=${busy} onClick=${test}>Test senden</button>
+          <button type="button" class="btn ghost" disabled=${busy} onClick=${off}>Ausschalten</button>`
+        : html`<button type="button" class="btn primary" disabled=${busy || state === 'lädt'} onClick=${on}>Erinnerungen einschalten</button>`}
+      </div>`}
+  </div>`;
+}
+
 function SettingsSheet({ onLogout }) {
   const { session, actions, claude } = useApp();
   const [theme, setTheme] = useState(ls.get('crm-theme') || '');
@@ -1014,6 +1089,7 @@ function SettingsSheet({ onLogout }) {
           <button type="button" class="btn" onClick=${onLogout}>${DEMO ? 'Demo zurücksetzen' : 'Abmelden'}</button>
         </div>
       </div>
+      <${PushSettings} />
       <${GoogleAccounts} />
       <div class="field"><span>Zwei-Faktor</span>
         ${newFactor ? html`
@@ -1240,7 +1316,7 @@ function ContactActions({ phones = [], emails = [], website }) {
 // ---------------------------------------------------------------------------
 // Kacheln der Übersicht mit eigener Farbe, je Gerät gespeichert wie das Farbschema.
 // Der Farbpunkt im Kopf öffnet die Farbauswahl des Browsers, die Kachel färbt sich schon beim Ziehen.
-const TILE_COLORS = { todo: 'var(--gold)', team: '#7fa7c9', termine: '#6fb58f', warten: '#d98b4f', meetings: '#b08fd6' };
+const TILE_COLORS = { todo: 'var(--gold)', wiedervorlagen: '#d98b4f', team: '#7fa7c9', termine: '#6fb58f', meetings: '#b08fd6' };
 const tileColors = () => { try { return JSON.parse(ls.get('crm-tiles') || '{}'); } catch { return {}; } };
 // Farbwähler brauchen #rrggbb, Standardfarben dürfen auch CSS-Variablen des Farbschemas sein
 const toHex = (c) => {
@@ -1260,6 +1336,42 @@ function Tile({ id, title, cls = '', children }) {
       <input type="color" value=${toHex(color)} onInput=${(e) => pick(e.target.value)} aria-label="Farbe der Kachel" /></label></h2>
     ${children}
   </section>`;
+}
+
+// Wiedervorlagen (21_wiedervorlagen.sql): was fällig ist, aus allen Spalten außer „Erledigt“, was in den
+// nächsten 7 Tagen kommt und was sonst noch auf Antwort wartet. Ersetzt „Warte auf Rückmeldung“.
+// „Wieder in …“ setzt das Datum ab heute neu. Die Zahl des Fälligen steht auch am App-Symbol.
+const FOLLOW_STEPS = [[3, '3 Tagen'], [7, '1 Woche'], [14, '2 Wochen']];
+
+function FollowUpTile({ open }) {
+  const { idx } = useApp();
+  const [all, setAll] = useState(false);
+  const today = todayStr();
+  const soon = addDays(today, 7);
+  const kind = (c) => stageKind(idx.stage.get(c.stage_id));
+  const active = open.filter((c) => kind(c) !== 'done');
+  const byDue = (a, b) => a.due_date.localeCompare(b.due_date) || byUpdatedDesc(a, b);
+  const due = active.filter((c) => c.due_date && c.due_date <= today).sort(byDue);
+  const next = active.filter((c) => c.due_date && c.due_date > today && c.due_date <= soon).sort(byDue);
+  const waiting = active.filter((c) => kind(c) === 'waiting' && !(c.due_date && c.due_date <= soon))
+    .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9') || ts(a.updated_at) - ts(b.updated_at));
+  useEffect(() => {
+    if (due.length) navigator.setAppBadge?.(due.length).catch(() => {});
+    else navigator.clearAppBadge?.().catch(() => {});
+  }, [due.length]);
+  const shownWaiting = all ? waiting : waiting.slice(0, 6);
+  return html`<${Tile} id="wiedervorlagen" cls=${due.length ? 'has-due' : ''}
+      title=${html`Wiedervorlagen ${due.length > 0 && html`<span class="count">${due.length} fällig</span>`}`}>
+    ${due.length > 0 && html`<div class="todo-group"><h3 class="group-late">Fällig <span class="count">${due.length}</span></h3>
+      ${due.map((c) => html`<${TodoRow} key=${'f' + c.id} card=${c} follow />`)}</div>`}
+    ${next.length > 0 && html`<div class="todo-group"><h3 class="group-normal">Nächste 7 Tage <span class="count">${next.length}</span></h3>
+      ${next.map((c) => html`<${TodoRow} key=${'n' + c.id} card=${c} follow />`)}</div>`}
+    ${waiting.length > 0 && html`<div class="todo-group"><h3 class="group-normal">Wartet auf Antwort <span class="count">${waiting.length}</span></h3>
+      ${shownWaiting.map((c) => html`<${TodoRow} key=${'w' + c.id} card=${c} waiting />`)}
+      ${waiting.length > 6 && html`<button class="btn link sm" onClick=${() => setAll(!all)}>${all ? 'Weniger anzeigen' : `Alle ${waiting.length} anzeigen`}</button>`}</div>`}
+    ${!due.length && !next.length && !waiting.length && html`<p class="muted small">Nichts zum Nachhaken. Schieb eine Aufgabe nach
+      „Feedback von Anderen“ oder setz im Deal „Wieder vorlegen“, dann kommt sie hier rechtzeitig wieder hoch.</p>`}
+  <//>`;
 }
 
 // Team: was andere seit meinem letzten Blick geändert haben, und was bei anderen liegt
@@ -1287,7 +1399,6 @@ function Overview() {
   // Was nur anderen zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
   const open = cards.filter((c) => !c.archived && (assigneesOf(c).length === 0 || assigneesOf(c).includes(me)));
   const todo = open.filter((c) => kind(c) === 'todo' || kind(c) === 'doing');
-  const waiting = open.filter((c) => kind(c) === 'waiting').sort((a, b) => ts(a.updated_at) - ts(b.updated_at));
 
   // Gruppen nach Dringlichkeit in der Reihenfolge von prioRank: hoch, mittel, ohne, niedrig.
   // Innerhalb nach Fälligkeit, Überfälliges steht damit oben in seiner Gruppe.
@@ -1318,13 +1429,9 @@ function Overview() {
         ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
       <//>
       <div class="tile-side">
+        <${FollowUpTile} open=${open} />
         <${TeamTile} />
         <${TodayEvents} />
-        <${Tile} id="warten" title=${html`Warte auf Rückmeldung <span class="count">${waiting.length}</span>`}>
-          ${waiting.slice(0, 8).map((c) => html`<${TodoRow} key=${c.id} card=${c} waiting />`)}
-          ${waiting.length > 8 && html`<a class="btn link sm" href="#/board">Alle auf dem Board</a>`}
-          ${waiting.length === 0 && html`<p class="muted small">Gerade wartest du auf niemanden.</p>`}
-        <//>
         <${Tile} id="meetings" title="Letzte Meetings">
           ${recent.map((m) => {
     const pr = idx.project.get(m.project_id);
@@ -1386,12 +1493,20 @@ function QuickAdd() {
   </form>`;
 }
 
-function TodoRow({ card, waiting }) {
+function TodoRow({ card, waiting, follow }) {
   const { idx, stages, actions } = useApp();
   const [done, setDone] = useState(false);
   const pr = idx.project.get(card.project_id);
   const person = idx.person.get(card.person_id);
-  const meta = [pr?.name, person?.name, waiting ? `seit ${relDate(card.updated_at).replace(/^vor /, '')}` : ''].filter(Boolean).join(' · ');
+  const meta = [pr?.name, follow ? idx.stage.get(card.stage_id)?.name : '', person?.name,
+    waiting ? `seit ${relDate(card.updated_at).replace(/^vor /, '')}` : ''].filter(Boolean).join(' · ');
+  // Wiedervorlage ab heute neu setzen, z. B. nach dem Nachhaken
+  async function later(e, days) {
+    e.stopPropagation();
+    const due = addDays(todayStr(), days);
+    await actions.patch('cards', card.id, { due_date: due });
+    actions.notify(`„${card.title}“ kommt ${dueInfo(due)?.label || 'später'} wieder.`);
+  }
 
   async function complete(e) {
     e.stopPropagation();
@@ -1410,6 +1525,10 @@ function TodoRow({ card, waiting }) {
     <div class="todo-main">
       <div class="todo-title">${card.title}</div>
       <div class="todo-meta"><span class="dot"></span><span>${meta}</span><${CardBadges} card=${card} /><${TeamMarks} card=${card} /></div>
+      ${follow && html`<div class="todo-later" role="group" aria-label="Wieder vorlegen">
+        <span>Wieder in</span>
+        ${FOLLOW_STEPS.map(([d, l]) => html`<button type="button" key=${d} onClick=${(e) => later(e, d)}>${l}</button>`)}
+      </div>`}
     </div>
   </div>`;
 }
@@ -1781,7 +1900,19 @@ function CardSheet({ id, query }) {
   function pickStage(sid) {
     set('stage_id', sid);
     // Spalte wechseln speichert sofort, solange das Projekt gleich bleibt.
-    if (card && form.project_id === card.project_id) actions.patch('cards', card.id, { stage_id: sid });
+    if (card && form.project_id === card.project_id) {
+      actions.patch('cards', card.id, { stage_id: sid })
+        .then((saved) => { if (saved?.due_date) setForm((f) => (f.due_date ? f : { ...f, due_date: saved.due_date })); });
+    }
+  }
+  // „Warte auf Antwort“: nach „Feedback …“ schieben und die Wiedervorlage setzen, beides sofort gespeichert
+  const waitStage = projStages.find((s) => stageKind(s) === 'waiting');
+  const toWait = waitStage && form.stage_id !== waitStage.id;
+  function followUp(days) {
+    const due = addDays(todayStr(), days);
+    const stageId = toWait ? waitStage.id : form.stage_id;
+    setForm((f) => ({ ...f, due_date: due, stage_id: stageId }));
+    if (card && form.project_id === card.project_id) actions.patch('cards', card.id, { due_date: due, stage_id: stageId });
   }
   function pickPerson(pid) {
     const p = idx.person.get(pid);
@@ -1896,6 +2027,10 @@ function CardSheet({ id, query }) {
         </div>
         <label class="field"><span>Fällig am</span>
           <input type="date" value=${form.due_date || ''} onInput=${(e) => set('due_date', e.target.value || null)} /></label>
+      </div>
+      <div class="field"><span>${toWait ? 'Warte auf Antwort, wieder vorlegen' : 'Wieder vorlegen'}</span>
+        <div class="seg wrap">${FOLLOW_STEPS.map(([d, l]) => html`<button type="button" key=${d} class="seg-btn" onClick=${() => followUp(d)}>in ${l}</button>`)}</div>
+        ${toWait && html`<p class="muted small">Schiebt die Aufgabe nach „${waitStage.name}“ und setzt das Datum. Sie kommt dann unter „Wiedervorlagen“ wieder hoch.</p>`}
       </div>
       ${users.length > 1 && html`<div class="field"><span>Zuständig</span>
         <${MultiPick} options=${assigneeOptions} value=${form.assignees} onToggle=${toggleAssignee} empty="Niemand" /></div>`}
@@ -3416,6 +3551,8 @@ root.textContent = '';
 render(html`<${App} />`, root);
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  // Mitteilung angetippt, während das CRM offen ist: dorthin wechseln
+  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.go) location.hash = e.data.go; });
   addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').then((reg) => {
       // Der Browser fragt sonst nur beim Öffnen nach einer neuen Fassung, ein Fenster bleibt aber oft den ganzen Tag offen

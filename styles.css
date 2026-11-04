@@ -627,6 +627,14 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .todo-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; margin-top: 1px; font-size: 12.5px; color: var(--muted); }
 .todo-meta .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pc); flex: none; }
 .todo-meta .badges { margin-left: 4px; }
+/* Wiedervorlagen: neu vorlegen in 3 Tagen, 1 Woche, 2 Wochen */
+.todo-later { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 5px; font-size: 12px; color: var(--muted); }
+.todo-later span { margin-right: 2px; }
+.todo-later button {
+  padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent;
+  color: var(--text); font: 12px var(--font); cursor: pointer;
+}
+.todo-later button:hover { border-color: var(--tc, var(--gold)); background: var(--hover); }
 
 /* Spalten über die ganze Höhe, damit man einen Deal überall in der Spalte ablegen kann, nicht nur auf ihrem Kopf */
 .board {
@@ -917,7 +925,9 @@ details.more[open] summary { margin-bottom: 12px; }
   .detail-grid { grid-template-columns: 1fr; gap: 0; }
   .contact-actions .btn { height: 40px; }
   .field-row { flex-direction: column; }
-  .tiles { grid-template-columns: 1fr; }
+  .tiles { display: flex; flex-direction: column; }
+  .tile-side { display: contents; }
+  .tile.has-due { order: -1; }
   .tile { padding: 14px; }
   .tabbar a { font-size: 10.5px; }
   /* iOS zoomt in Felder unter 16px hinein */

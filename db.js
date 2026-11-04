@@ -37,9 +37,14 @@ function check({ data, error }) {
 }
 
 async function googleCall(path, body) {
+  return functionCall('google-abgleich', path, body);
+}
+
+// Edge Function mit dem eigenen Login aufrufen
+async function functionCall(name, path, body) {
   const c = await client();
   const session = check(await c.auth.getSession()).session;
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/google-abgleich/${path}`, {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}/${path}`, {
     method: 'POST',
     headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -130,6 +135,10 @@ const remote = {
     return check(await c.rpc(fn, args));
   },
   // Google-Konto verbinden und abgleichen (Edge Function google-abgleich)
+  // Erinnerung sofort an die eigenen Geräte schicken (Funktion „erinnerung“)
+  async pushTest() {
+    return functionCall('erinnerung', 'test', {});
+  },
   async googleStart(address) {
     return (await googleCall('start', { address })).url;
   },
@@ -292,6 +301,7 @@ const demo = {
   async onAuth() {},
   async signIn() { return demo.session(); },
   async signUp() { return demo.session(); },
+  async pushTest() { throw new Error('Im Demo-Modus gibt es keine Mitteilungen.'); },
   async resetPassword() {},
   async setPassword() { return demo.session(); },
   async mfaState() { return { current: 'aal2', verified: [{ id: 'demo' }] }; },
