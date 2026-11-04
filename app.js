@@ -211,6 +211,7 @@ const ICONS = {
   back: '<path d="M15 5l-7 7 7 7"/>',
   next: '<path d="M9 5l7 7-7 7"/>',
   down: '<path d="M5 9l7 7 7-7"/>',
+  clip: '<path d="M20.5 11.5l-8.4 8.4a5 5 0 01-7.1-7.1l8.6-8.6a3.3 3.3 0 014.7 4.7l-8.6 8.6a1.7 1.7 0 01-2.4-2.4l7.9-7.9"/>',
   share: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0111 0M16 5a3 3 0 010 6M20.5 20a5.5 5.5 0 00-3.5-5.1"/>',
   lock: '<rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 017 0v3"/>',
   file: '<path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/>',
@@ -518,7 +519,7 @@ function Main({ session }) {
   const load = useCallback(async () => {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
-        card_shares, role, users, project_shares, card_events, card_seen] = await Promise.all([
+        card_shares, role, users, project_shares, card_events, card_seen, file_counts] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -530,6 +531,7 @@ function Main({ session }) {
         db.list('project_shares').catch(() => []),
         db.list('card_events').catch(() => []),
         db.list('card_seen').catch(() => []),
+        db.rpc('card_file_counts').catch(() => []),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
@@ -539,7 +541,7 @@ function Main({ session }) {
       const myProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
       const cards = role === 'gast' ? allCards.filter((c) => mine.has(c.id) || myProjects.has(c.project_id)) : allCards;
       setData({ projects, stages, organizations, persons, cards, meetings, meeting_persons, events, event_persons,
-        card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen });
+        card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [] });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -592,6 +594,10 @@ function Main({ session }) {
         } catch (e) { fail(e); load(); }
       },
       reloadHistory,
+      // Anzahl der Dateien einer Karte für die Büroklammer auf dem Board
+      setFileCount(cardId, n) {
+        setData((d) => ({ ...d, file_counts: [...(d.file_counts || []).filter((x) => x.card_id !== cardId), { card_id: cardId, n }] }));
+      },
       // Karte als gesehen markieren, damit „Neu“ verschwindet
       async markSeen(cardId) {
         const row = { card_id: cardId, email: me, seen_at: new Date().toISOString() };
@@ -683,6 +689,7 @@ function Main({ session }) {
       historyOf.get(e.card_id).push(e);
     });
     const me = (session?.user?.email || '').toLowerCase();
+    const filesOf = new Map((data.file_counts || []).map((x) => [x.card_id, x.n]));
     const seenAt = new Map(data.card_seen.filter((x) => x.email.toLowerCase() === me).map((x) => [x.card_id, ts(x.seen_at)]));
     // Neu: jemand anderes hat seit meinem letzten Öffnen etwas geändert
     // Was Claude im Auftrag des Eigentümers ändert, ist für ihn selbst nicht neu
@@ -705,6 +712,7 @@ function Main({ session }) {
       sharesOf,
       projectSharesOf,
       historyOf,
+      filesOf,
       isNew,
       mentionedMe,
       visibleFor,
@@ -1500,6 +1508,8 @@ function CardItem({ card, dragging, onDragStart, onDragEnd }) {
     <div class="card-title">${card.title}</div>
     ${meta && html`<div class="card-meta">${meta}</div>`}
     <div class="card-foot"><${CardBadges} card=${card} /><${TeamMarks} card=${card} />
+      ${idx.filesOf.get(card.id) > 0 && html`<span class="files-mark" title=${`${idx.filesOf.get(card.id)} ${idx.filesOf.get(card.id) === 1 ? 'Datei' : 'Dateien'}`}>
+        <${Icon} n="clip" />${idx.filesOf.get(card.id)}</span>`}
       ${((idx.sharesOf.get(card.id) || []).length > 0 || (idx.projectSharesOf.get(card.project_id) || []).length > 0)
         && html`<span class="shared-mark" title="Geteilt"><${Icon} n="share" /></span>`}
       <span>${relDate(card.updated_at)}</span></div>
@@ -1514,18 +1524,24 @@ const safeFileName = (name) => name.replace(/ä/g, 'ae').replace(/ö/g, 'oe').re
   .replace(/\s+/g, '_').replace(/[^A-Za-z0-9._-]+/g, '-').slice(-120);
 const fileSize = (n) => (n > 1e6 ? `${(n / 1e6).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
 
-function FilesPanel({ card }) {
-  const { actions, isGuest, idx } = useApp();
+// Dateien einer Karte: laden, hochladen (Auswahl oder Ziehen und Ablegen), öffnen, löschen.
+// Die Anzahl fürs Board wird dabei mitgeführt.
+function useCardFiles(card) {
+  const { actions } = useApp();
   const [files, setFiles] = useState(null);
   const [busy, setBusy] = useState(false);
-  const prefix = `karten/${card.id}`;
-  const load = () => db.listFiles(prefix).then(setFiles).catch((e) => { actions.fail(e); setFiles([]); });
-  useEffect(() => { load(); }, [card.id]);
+  const prefix = card ? `karten/${card.id}` : '';
+  async function load() {
+    try {
+      const list = await db.listFiles(prefix);
+      setFiles(list);
+      actions.setFileCount(card.id, list.length);
+    } catch (e) { actions.fail(e); setFiles([]); }
+  }
+  useEffect(() => { if (card) load(); }, [card?.id]);
 
-  async function upload(e) {
-    const list = [...e.target.files];
-    e.target.value = '';
-    if (!list.length) return;
+  async function upload(list) {
+    if (!card || !list.length) return;
     setBusy(true);
     try {
       for (const f of list) {
@@ -1549,13 +1565,19 @@ function FilesPanel({ card }) {
     if (!confirm(`„${fileLabel(f.name)}“ löschen?`)) return;
     try { await db.removeFile(`${prefix}/${f.name}`); await load(); } catch (e) { actions.fail(e); }
   }
+  return { files, busy, upload, open, del };
+}
 
+function FilesPanel({ card, cf }) {
+  const { isGuest, idx } = useApp();
+  const { files, busy, upload, open, del } = cf;
+  const pick = (e) => { const list = [...e.target.files]; e.target.value = ''; upload(list); };
   return html`<section class="files">
-    <h3>Dateien ${files && html`<span class="count">${files.length}</span>`}
+    <h3><${Icon} n="clip" />Dateien ${files && html`<span class="count">${files.length}</span>`}
       <label class=${'btn sm' + (busy ? ' disabled' : '')}><${Icon} n="plus" />${busy ? 'Lädt hoch …' : 'Datei hinzufügen'}
-        <input type="file" multiple hidden disabled=${busy} onChange=${upload} /></label></h3>
+        <input type="file" multiple hidden disabled=${busy} onChange=${pick} /></label></h3>
     ${files === null ? html`<p class="muted small">Lädt …</p>`
-    : files.length === 0 ? html`<p class="muted small">Noch keine Dateien. Exposé, Vertrag oder Fotos hier ablegen, bis 25 MB pro Datei.</p>`
+    : files.length === 0 ? html`<p class="files-empty">Word, PDF, Excel oder Fotos hierher ziehen oder „Datei hinzufügen“, bis 25 MB pro Datei.</p>`
       : files.map((f) => html`<div class="file-row" key=${f.name}>
         <button type="button" class="file-open" onClick=${() => open(f)}><${Icon} n="file" /><span class="ell">${fileLabel(f.name)}</span></button>
         <span class="muted small">${fileSize(f.metadata?.size || 0)} · ${shortDate(f.created_at)}</span>
@@ -1617,6 +1639,33 @@ function CardSheet({ id, query }) {
   const titleRef = useRef(null);
   // Angefangene Notiz im NotesPanel, damit „Speichern“ oben sie mitnimmt
   const noteRef = useRef(null);
+  const cf = useCardFiles(card);
+  // Dateien ins Fenster ziehen: Hinweis zeigen, beim Ablegen hochladen. Daneben Abgelegtes öffnet der Browser nicht.
+  const [dropping, setDropping] = useState(false);
+  const dragDepth = useRef(0);
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  useEffect(() => {
+    const stop = (e) => { if (hasFiles(e)) e.preventDefault(); };
+    addEventListener('dragover', stop);
+    addEventListener('drop', stop);
+    return () => { removeEventListener('dragover', stop); removeEventListener('drop', stop); };
+  }, []);
+  const dropProps = card ? {
+    onDragEnter: (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth.current += 1; setDropping(true); },
+    onDragOver: (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } },
+    onDragLeave: (e) => {
+      if (!hasFiles(e)) return;
+      dragDepth.current -= 1;
+      if (dragDepth.current <= 0) { dragDepth.current = 0; setDropping(false); }
+    },
+    onDrop: (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0;
+      setDropping(false);
+      cf.upload([...e.dataTransfer.files]);
+    },
+  } : {};
   useEffect(() => { if (isNew) titleRef.current?.focus(); }, []);
   // Öffnen zählt als gesehen, damit „Neu“ verschwindet
   useEffect(() => { if (card) actions.markSeen(card.id); }, [card?.id]);
@@ -1717,6 +1766,8 @@ function CardSheet({ id, query }) {
   const saveTop = html`<button type="button" class="btn primary sm" disabled=${busy || !form.title.trim()} onClick=${saveAll}
     title="Aufgabe und angefangene Notiz speichern und schließen">Speichern</button>`;
   return html`<${Sheet} title=${isNew ? 'Neue Aufgabe' : 'Aufgabe'} onClose=${leave} action=${saveTop}>
+    <div class="drop-zone" ...${dropProps}>
+    ${dropping && html`<div class="drop-hint"><${Icon} n="clip" />Dateien hier ablegen, sie hängen dann an „${card.title}“</div>`}
     <form class="form" onSubmit=${submit}>
       ${card?.archived && html`<div class="notice">Diese Aufgabe ist archiviert und erscheint nicht auf dem Board.</div>`}
       ${isGuest && !isNew ? html`<h2 class="ev-sheet-title">${form.title}</h2>
@@ -1766,6 +1817,8 @@ function CardSheet({ id, query }) {
         <${Combobox} items=${organizations} value=${form.org_id} onChange=${(v) => set('org_id', v)} placeholder="Firma suchen oder neu anlegen"
           label=${(o) => o.name} href=${(o) => `#/firma/${o.id}`}
           onCreate=${async (name) => (await actions.save('organizations', { name })).id} /></div>`}
+      ${card ? html`<${FilesPanel} card=${card} cf=${cf} />`
+    : html`<p class="muted small"><${Icon} n="clip" /> Dateien kannst du anhängen, sobald die Aufgabe angelegt ist.</p>`}
       <div class="form-actions">
         <button class="btn primary" disabled=${busy || !dirty || !form.title.trim()}>${isNew ? 'Anlegen' : 'Speichern'}</button>
         ${card && !isGuest && html`<span class="spacer"></span>
@@ -1778,10 +1831,10 @@ function CardSheet({ id, query }) {
           <span class="muted">${fullDate(e.at)}</span> <strong>${!e.actor ? 'System' : e.actor.toLowerCase() === me ? 'Du' : idx.userName.get(e.actor.toLowerCase()) || e.actor}</strong> ${historyText(e, idx)}</div>`)}
       </details>`}
     </form>
-    ${card && html`<${FilesPanel} card=${card} />`}
     ${card && html`<${NotesPanel} filter=${{ card_id: card.id }} pendingRef=${noteRef}
       defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
     ${mailPeople.length > 0 && html`<${EmailsPanel} personIds=${mailPeople} />`}
+    </div>
   <//>`;
 }
 
