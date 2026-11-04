@@ -858,7 +858,14 @@ const THEMES = [
   ['anthrazit', 'Anthrazit', '#18191b', '#bf9969'],
   ['nacht', 'Nachtblau', '#121826', '#7aa2f7'],
   ['aubergine', 'Aubergine', '#1f1716', '#bf9969'],
+  ['petrol', 'Petrol', '#0f1f22', '#4fb3a9'],
+  ['bordeaux', 'Bordeaux', '#1e1215', '#e0a96d'],
+  ['schiefer', 'Schiefer', '#1b1f24', '#e08a5a'],
+  ['violett', 'Violett', '#18142a', '#b49bf2'],
   ['hell', 'Hell', '#faf9f6', '#354840'],
+  ['sand', 'Sand', '#f6f1e7', '#9a6b2f'],
+  ['nebel', 'Nebel', '#f3f6fa', '#2f5fb3'],
+  ['salbei', 'Salbei', '#f2f5f0', '#4f7a5a'],
 ];
 function applyTheme(key) {
   if (key) document.documentElement.dataset.theme = key;
@@ -870,6 +877,7 @@ function applyTheme(key) {
 function SettingsSheet({ onLogout }) {
   const { session, actions } = useApp();
   const [theme, setTheme] = useState(ls.get('crm-theme') || '');
+  const [ownTiles, setOwnTiles] = useState(() => Object.keys(tileColors()).length > 0);
   const [newFactor, setNewFactor] = useState(false);
   // Neuer Faktor bestätigt: alle älteren Faktoren entfernen, ihre Codes gelten dann nicht mehr
   async function factorDone(factorId) {
@@ -891,6 +899,14 @@ function SettingsSheet({ onLogout }) {
             <span class="swatch" style=${`--s1:${s1};--s2:${s2}`}></span>${name}</button>`)}
         </div>
         <p class="muted small">Gilt für dieses Gerät.</p>
+      </div>
+      <div class="field"><span>Kacheln der Übersicht</span>
+        <p class="muted small">Jede Kachel hat oben rechts einen Farbpunkt. Antippen öffnet die Farbauswahl, die Farbe gilt für dieses Gerät.</p>
+        ${ownTiles && html`<div class="form-actions"><button type="button" class="btn" onClick=${() => {
+    ls.set('crm-tiles', '{}');
+    setOwnTiles(false);
+    actions.notify('Die Kacheln haben wieder ihre Standardfarben.');
+  }}>Kachelfarben zurücksetzen</button></div>`}
       </div>
       <div class="field"><span>Konto</span>
         <p class="small">${DEMO ? 'Demo-Modus, Daten nur in diesem Browser' : `Angemeldet als ${session.user?.email || ''}, mit Zwei-Faktor-Anmeldung`}</p>
@@ -1122,6 +1138,30 @@ function ContactActions({ phones = [], emails = [], website }) {
 // ---------------------------------------------------------------------------
 // Übersicht: was zu tun ist, worauf ich warte, letzte Meetings
 // ---------------------------------------------------------------------------
+// Kacheln der Übersicht mit eigener Farbe, je Gerät gespeichert wie das Farbschema.
+// Der Farbpunkt im Kopf öffnet die Farbauswahl des Browsers, die Kachel färbt sich schon beim Ziehen.
+const TILE_COLORS = { todo: 'var(--gold)', team: '#7fa7c9', termine: '#6fb58f', warten: '#d98b4f', meetings: '#b08fd6' };
+const tileColors = () => { try { return JSON.parse(ls.get('crm-tiles') || '{}'); } catch { return {}; } };
+// Farbwähler brauchen #rrggbb, Standardfarben dürfen auch CSS-Variablen des Farbschemas sein
+const toHex = (c) => {
+  const v = c.startsWith('var(') ? getComputedStyle(document.documentElement).getPropertyValue(c.slice(4, -1)).trim() : c;
+  return /^#[0-9a-f]{6}$/i.test(v) ? v : '#bf9969';
+};
+
+function Tile({ id, title, cls = '', children }) {
+  const [own, setOwn] = useState(() => tileColors()[id] || '');
+  const color = own || TILE_COLORS[id];
+  function pick(v) {
+    setOwn(v);
+    ls.set('crm-tiles', JSON.stringify({ ...tileColors(), [id]: v }));
+  }
+  return html`<section class=${'tile colored ' + cls} style=${`--tc:${color}`}>
+    <h2>${title}<label class="tile-color" title="Farbe der Kachel ändern">
+      <input type="color" value=${toHex(color)} onInput=${(e) => pick(e.target.value)} aria-label="Farbe der Kachel" /></label></h2>
+    ${children}
+  </section>`;
+}
+
 // Team: was andere seit meinem letzten Blick geändert haben, und was bei anderen liegt
 function TeamTile() {
   const { cards, idx, me, users } = useApp();
@@ -1130,15 +1170,14 @@ function TeamTile() {
   const fresh = open.filter((c) => idx.isNew(c)).sort(byUpdatedDesc);
   const elsewhere = open.filter((c) => assigneesOf(c).length > 0 && !assigneesOf(c).includes(me)
     && stageKind(idx.stage.get(c.stage_id)) !== 'done').sort(byUpdatedDesc);
-  return html`<section class="tile">
-    <h2>Team</h2>
+  return html`<${Tile} id="team" title="Team">
     <h3 class="group-normal">Neu seit deinem letzten Blick <span class="count">${fresh.length}</span></h3>
     ${fresh.slice(0, 8).map((c) => html`<${TodoRow} key=${'n' + c.id} card=${c} />`)}
     ${fresh.length === 0 && html`<p class="muted small">Keine Änderungen von anderen.</p>`}
     <h3 class="group-normal">Liegt bei anderen <span class="count">${elsewhere.length}</span></h3>
     ${elsewhere.slice(0, 8).map((c) => html`<${TodoRow} key=${'a' + c.id} card=${c} waiting />`)}
     ${elsewhere.length === 0 && html`<p class="muted small">Gerade liegt nichts bei anderen.</p>`}
-  </section>`;
+  <//>`;
 }
 
 function Overview() {
@@ -1162,8 +1201,7 @@ function Overview() {
   return html`<div class="page overview">
     <div class="page-head"><h1>Übersicht</h1><span class="muted">${today}</span></div>
     <div class="tiles">
-      <section class="tile tile-main">
-        <h2>Zu erledigen <span class="count">${todo.length}</span></h2>
+      <${Tile} id="todo" cls="tile-main" title=${html`Zu erledigen <span class="count">${todo.length}</span>`}>
         <${QuickAdd} />
         ${sections.map(([title, list]) => {
     // Hoch und Mittel immer ganz, die anderen erst nach „Alle anzeigen“
@@ -1178,18 +1216,16 @@ function Overview() {
           </div>`;
   })}
         ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
-      </section>
+      <//>
       <div class="tile-side">
         <${TeamTile} />
         <${TodayEvents} />
-        <section class="tile">
-          <h2>Warte auf Rückmeldung <span class="count">${waiting.length}</span></h2>
+        <${Tile} id="warten" title=${html`Warte auf Rückmeldung <span class="count">${waiting.length}</span>`}>
           ${waiting.slice(0, 8).map((c) => html`<${TodoRow} key=${c.id} card=${c} waiting />`)}
           ${waiting.length > 8 && html`<a class="btn link sm" href="#/board">Alle auf dem Board</a>`}
           ${waiting.length === 0 && html`<p class="muted small">Gerade wartest du auf niemanden.</p>`}
-        </section>
-        <section class="tile">
-          <h2>Letzte Meetings</h2>
+        <//>
+        <${Tile} id="meetings" title="Letzte Meetings">
           ${recent.map((m) => {
     const pr = idx.project.get(m.project_id);
     return html`<a key=${m.id} class="mini-card" href=${`#/meeting/${m.id}`} style=${`--pc:${pr?.color || '#888'}`}>
@@ -1199,7 +1235,7 @@ function Overview() {
   })}
           ${recent.length === 0 && html`<p class="muted small">Noch keine Meetings.</p>`}
           <a class="btn link sm" href="#/meetings">Alle Meetings</a>
-        </section>
+        <//>
       </div>
     </div>
   </div>`;
@@ -2362,11 +2398,10 @@ function TodayEvents() {
   const today = todayStr();
   const tomorrow = addDays(today, 1);
   const list = idx.events.filter((e) => eventDay(e) === today || eventDay(e) === tomorrow);
-  return html`<section class="tile">
-    <h2>Termine heute und morgen <span class="count">${list.length}</span></h2>
+  return html`<${Tile} id="termine" title=${html`Termine heute und morgen <span class="count">${list.length}</span>`}>
     ${list.length > 0 ? html`<${EventDays} list=${list} />` : html`<p class="muted small">${idx.events.length ? 'Heute und morgen keine Termine.' : 'Noch keine Kalender verbunden.'}</p>`}
     <a class="btn link sm" href="#/kalender">Zum Kalender</a>
-  </section>`;
+  <//>`;
 }
 
 function EventSheet({ event: ev }) {
