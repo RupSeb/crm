@@ -3342,23 +3342,28 @@ function loadTesseract() {
   return tesseractLoad;
 }
 
-// Foto für die Erkennung aufbereiten: auf etwa 1800 Pixel bringen, grau, etwas mehr Kontrast
+// Foto für die Erkennung: in voller Auflösung und unverändert, das liest Tesseract am besten.
+// Tests mit Handyfotos: verkleinert auf 1800 Pixel mit mehr Kontrast 2 von 9 Zeilen richtig, in voller Auflösung 9 von 9.
+// Über ein <img>, damit die Drehung aus dem Foto (EXIF) stimmt. Kleine Bilder werden hochgerechnet, große nur so weit
+// verkleinert, wie das iPhone für ein Canvas erlaubt (gut 16 Mio. Pixel).
 async function cardImage(file) {
-  const bmp = await createImageBitmap(file);
-  const scale = Math.min(2.5, 1800 / Math.max(bmp.width, bmp.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(bmp.width * scale);
-  c.height = Math.round(bmp.height * scale);
-  const g = c.getContext('2d');
-  g.drawImage(bmp, 0, 0, c.width, c.height);
-  const img = g.getImageData(0, 0, c.width, c.height);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const v = Math.max(0, Math.min(255, (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2] - 128) * 1.35 + 128));
-    d[i] = d[i + 1] = d[i + 2] = v;
-  }
-  g.putImageData(img, 0, 0);
-  return c;
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    await new Promise((ok, bad) => {
+      img.onload = ok;
+      img.onerror = () => bad(new Error('Das Foto ließ sich nicht öffnen.'));
+      img.src = url;
+    });
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    const scale = Math.min(Math.max(1, 2000 / Math.max(w, h)), Math.sqrt(16e6 / (w * h)));
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * scale);
+    c.height = Math.round(h * scale);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c;
+  } finally { URL.revokeObjectURL(url); }
 }
 
 const COMPANY_FORM_RE = /\b(GmbH|mbH|mbB|AG|SE|UG|KG|OHG|GbR|e\.\s?K\.|e\.\s?V\.|Ltd|Limited|Inc|LLC|B\.V\.|S\.A\.|Holding|Gruppe|Group|Kanzlei|Steuerberatung|Rechtsanw\w*|Consulting|Immobilien|Architekten|Hausverwaltung)\b| & /i;
@@ -3368,10 +3373,25 @@ const FREEMAIL = new Set(['gmail.com', 'googlemail.com', 'gmx.de', 'gmx.net', 'w
   'proton.me', 'protonmail.com', 'live.com', 'live.de', 'msn.com', 'arcor.de']);
 const umlautPlain = (s) => norm(String(s).replace(/ä/gi, 'ae').replace(/ö/gi, 'oe').replace(/ü/gi, 'ue').replace(/ß/g, 'ss'));
 const hostOf = (u) => String(u || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+// Anzahl der Tippfehler zwischen zwei Wörtern (Levenshtein)
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
 
 // Text einer Visitenkarte auf Felder verteilen. Bewusst einfache Regeln, das Formular danach ist zum Korrigieren da.
 function parseCard(raw) {
-  const lines = String(raw).split(/\n+/).map((l) => l.replace(/[|•·]/g, ' ').replace(/\s+/g, ' ').trim()).filter((l) => l.length > 1);
+  const lines = String(raw).split(/\n+/).map((l) => l.replace(/[|•·]/g, ' ').replace(/\s+/g, ' ').trim()).filter((l) => l.length > 1)
+    // Die Erkennung verliert in Mail und Website gern Punkte oder setzt Leerzeichen („kraus-immobilien de“, „WWW. kraus“)
+    .map((l) => (/@|www|https?:/i.test(l) ? l.replace(/\s*@\s*/g, '@').replace(/\bwww\.?\s+/gi, 'www.').replace(/(https?:\/\/)\s+/gi, '$1')
+      .replace(/\.\s+/g, '.').replace(/(\w)[ ,](de|com|net|org|eu|at|ch|info|io|biz)\b/gi, '$1.$2').replace(/\bWWW\./, 'www.')
+      // Leerzeichen mitten in der Domain war meist ein Bindestrich („kraus immobilien.de“ → „kraus-immobilien.de“)
+      .replace(/(@|www\.)([\w-]+(?: [\w-]+)+\.[a-z]{2,})\b/gi, (m, a, d) => a + d.replace(/ /g, '-')) : l));
   const all = lines.join('\n');
   const emails = [...new Set((all.match(/[a-z0-9._%+-]+ ?@ ?[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}/gi) || []).map((m) => m.replace(/\s/g, '').toLowerCase()))];
   const email = emails[0] || '';
@@ -3379,7 +3399,9 @@ function parseCard(raw) {
   const ownDomain = domain && !FREEMAIL.has(domain) ? domain : '';
   const webLine = lines.find((l) => /(www\.|https?:\/\/)/i.test(l) && !l.includes('@')) || '';
   let website = (webLine.match(/(https?:\/\/)?(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(\/[^\s]*)?/i) || [''])[0]
-    .replace(/^https?:\/\//i, '').replace(/\/$/, '');
+    .replace(/^https?:\/\//i, '').replace(/\/$/, '').toLowerCase();
+  // Website nur leicht anders als die Domain der Mail: Lesefehler, die Mail-Domain gilt
+  if (ownDomain && website && hostOf(website) !== ownDomain && editDistance(hostOf(website), ownDomain) <= 3) website = `www.${ownDomain}`;
   if (!website && ownDomain) website = `www.${ownDomain}`;
   // Telefon: mindestens 7 Ziffern, Fax nicht, Mobilnummern (01…, +49 1…) getrennt
   const phones = [];
@@ -3402,7 +3424,7 @@ function parseCard(raw) {
     const prev = lines[plzAt - 1] || '';
     const street = /(str\.|straße|strasse|weg\b|platz|allee|gasse|ring\b|damm|ufer|markt|\d+ ?[a-z]?$)/i.test(prev)
       && !prev.includes('@') && !/\d{6,}/.test(prev.replace(/\s/g, '')) && !COMPANY_FORM_RE.test(prev) ? prev : '';
-    address = [street, lines[plzAt]].filter(Boolean).join(', ').replace(/(\d ?[a-z]?) (\d{5} )/, '$1, $2');
+    address = [street, lines[plzAt]].filter(Boolean).join(', ').replace(/(\d ?[a-z]?)\s*[-–*,]?\s+(\d{5} )/, '$1, $2');
   }
   let company = lines.find((l) => COMPANY_FORM_RE.test(l) && !l.includes('@') && !/www\./i.test(l) && l !== address) || '';
   // Name: die Zeile, die am besten zum Teil vor dem @ passt (max.mustermann@ → „Max Mustermann“, s.kraus@ → „Stefan Kraus“)
@@ -3454,7 +3476,7 @@ function CardScanSheet() {
         logger: (m) => { if (m.status === 'recognizing text') setStatus(`Liest die Karte … ${Math.round(m.progress * 100)} %`); },
       });
       const { data } = await worker.recognize(canvas);
-      setF(parseCard(data.text));
+      setF({ ...parseCard(data.text), unsicher: data.confidence < 70 });
       setStep('pruefen');
     } catch (err) {
       actions.fail(err);
@@ -3512,7 +3534,7 @@ function CardScanSheet() {
       <label class="scan-pick">
         <input type="file" accept="image/*" capture="environment" hidden onChange=${read} />
         <${Icon} n="camera" /><strong>Visitenkarte fotografieren</strong>
-        <span class="muted small">Gerade von oben, gut ausgeleuchtet, die Karte füllt das Bild</span>
+        <span class="muted small">Nah ran, bis die Karte das Foto fast ausfüllt, gerade von oben und ohne Spiegelung</span>
       </label>
       <label class="btn"><input type="file" accept="image/*" hidden onChange=${read} />Foto aus der Mediathek</label>
       <details class="more"><summary>Oder Text einfügen</summary>
@@ -3528,7 +3550,10 @@ function CardScanSheet() {
     </section>`}
     ${step === 'pruefen' && f && html`<form class="form scan" onSubmit=${(e) => { e.preventDefault(); save(false); }}>
       ${preview && html`<img class="scan-preview" src=${preview} alt="Visitenkarte" />`}
-      <p class="muted small">Bitte kurz prüfen und korrigieren, die Erkennung macht Fehler.</p>
+      ${f.unsicher ? html`<div class="notice">Die Erkennung war unsicher. Besser lesbar wird es, wenn die Karte das Foto fast ausfüllt,
+        gerade und ohne Spiegelung. Am iPhone liest die Kamera selbst oft besser: Text-Symbol antippen, alles kopieren und unter
+        „Neues Foto“ → „Oder Text einfügen“ einfügen.</div>`
+    : html`<p class="muted small">Bitte kurz prüfen und korrigieren, die Erkennung macht Fehler.</p>`}
       ${field('name', 'Name')}
       ${field('company', 'Firma')}
       ${f.company.trim() && html`<p class="muted small scan-hint">${org ? html`Vorhandene Firma: <a href=${`#/firma/${org.id}`}>${org.name}</a>` : 'Firma wird neu angelegt.'}</p>`}
