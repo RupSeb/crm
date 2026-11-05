@@ -1113,7 +1113,15 @@ function GoogleAccounts() {
   const [list, setList] = useState(null);
   const [address, setAddress] = useState(session.user?.email || '');
   const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState('');
   const load = () => db.rpc('meine_google_konten').then((l) => setList(l || [])).catch(() => setList([]));
+  // Zurück aus dem Inkognito-Fenster: das neue Konto erscheint von selbst
+  useEffect(() => {
+    const onShow = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onShow);
+    addEventListener('focus', onShow);
+    return () => { document.removeEventListener('visibilitychange', onShow); removeEventListener('focus', onShow); };
+  }, []);
   useEffect(() => {
     load();
     // Zurück von der Google-Anmeldung
@@ -1125,6 +1133,16 @@ function GoogleAccounts() {
   async function connect() {
     setBusy(true);
     try { location.href = await db.googleStart(address.trim()); } catch (e) { actions.fail(e); setBusy(false); }
+  }
+  // Anmeldung im Inkognito-Fenster: nur den Link holen. Das CRM bleibt hier angemeldet, im Inkognito-Fenster braucht
+  // es keine neue Anmeldung mit Code, die den Claude-Connector trennen würde.
+  async function incognito() {
+    setBusy(true);
+    try {
+      const url = await db.googleStart(address.trim());
+      setLink(url);
+      await navigator.clipboard.writeText(url).then(() => actions.notify('Link kopiert. Er gilt 15 Minuten.')).catch(() => {});
+    } catch (e) { actions.fail(e); } finally { setBusy(false); }
   }
   async function syncNow() {
     setBusy(true);
@@ -1148,8 +1166,13 @@ function GoogleAccounts() {
       <input type="email" value=${address} onInput=${(e) => setAddress(e.target.value)} /></label>
     <div class="form-actions">
       <button type="button" class="btn primary" disabled=${busy || !address.includes('@')} onClick=${connect}>Mit Google verbinden</button>
+      <button type="button" class="btn" disabled=${busy || !address.includes('@')} onClick=${incognito}>Link fürs Inkognito-Fenster</button>
       ${list?.length > 0 && html`<button type="button" class="btn" disabled=${busy} onClick=${syncNow}>Jetzt abgleichen</button>`}
     </div>
+    ${link && html`<label class="field"><span>Link für ${address.trim()}, 15 Minuten gültig</span>
+      <input readonly value=${link} onFocus=${(e) => e.target.select()} /></label>
+      <p class="muted small">In Chrome ein Inkognito-Fenster öffnen (Strg+Umschalt+N), den Link einfügen, mit diesem Postfach anmelden und zustimmen.
+        Danach kann das Fenster zu, auch wenn es die CRM-Anmeldung zeigt. Hier erscheint das Konto dann von selbst.</p>`}
   </div>`;
 }
 
