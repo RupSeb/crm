@@ -802,6 +802,9 @@ function Main({ session }) {
   } else if (sec === 'claude') {
     bg = lastParts.current || ['heute'];
     overlay = html`<${ClaudeSheet} key="claude" query=${route.query} />`;
+  } else if (sec === 'mail' && a === 'neu') {
+    bg = lastParts.current || ['postfach'];
+    overlay = html`<${MailSheet} key=${'mn' + route.query} query=${route.query} />`;
   } else if (sec === 'termin' && a === 'neu') {
     bg = lastParts.current || ['kalender'];
     overlay = html`<${NewEventSheet} key=${'tn' + route.query} query=${route.query} />`;
@@ -1104,16 +1107,43 @@ function SettingsSheet({ onLogout }) {
   <//>`;
 }
 
+// Eigene Postfächer, einmal geladen und für alle Stellen geteilt (Antworten, Kontakt, Deal, Einstellungen).
+// Gäste bekommen eine leere Liste, sie sehen weiter nur die mailto-Links.
+let googleKonten = [];
+let kontenLaden = null;
+const kontenHoerer = new Set();
+function ladeKonten(neu = false) {
+  if (!kontenLaden || neu) {
+    kontenLaden = db.rpc('meine_google_konten').then((l) => {
+      googleKonten = l || [];
+      kontenHoerer.forEach((f) => f(googleKonten));
+      return googleKonten;
+    }).catch(() => { kontenLaden = null; return []; });
+  }
+  return kontenLaden;
+}
+function useGoogleKonten() {
+  const [list, setList] = useState(googleKonten);
+  useEffect(() => {
+    kontenHoerer.add(setList);
+    ladeKonten();
+    return () => { kontenHoerer.delete(setList); };
+  }, []);
+  return list;
+}
+const useKannSenden = () => useGoogleKonten().some((k) => k.darf_senden);
+
 // Postfach und Kalender bei Google verbinden, jede Person mit ihrem eigenen Konto. Der Abgleich läuft
 // online bei Supabase (supabase/functions/google-abgleich), Mails und Termine gehören der Person.
+// Senden ist je Postfach einzeln freizuschalten, ohne das bleibt es bei reinem Lesen.
 function GoogleAccounts() {
   const { session, actions } = useApp();
   const route = useRoute();
   const [list, setList] = useState(null);
   const [address, setAddress] = useState(session.user?.email || '');
   const [busy, setBusy] = useState(false);
-  const [link, setLink] = useState('');
-  const load = () => db.rpc('meine_google_konten').then((l) => setList(l || [])).catch(() => setList([]));
+  const [link, setLink] = useState(null);
+  const load = () => ladeKonten(true).then(setList);
   // Zurück aus dem Inkognito-Fenster: das neue Konto erscheint von selbst
   useEffect(() => {
     const onShow = () => { if (document.visibilityState === 'visible') load(); };
@@ -1125,7 +1155,10 @@ function GoogleAccounts() {
     load();
     // Zurück von der Google-Anmeldung
     const g = route.query.get('google');
-    if (g === 'verbunden') actions.notify(`${route.query.get('info')} ist verbunden. Mails und Termine kommen in den nächsten Minuten.`);
+    const senden = route.query.get('senden');
+    if (g === 'verbunden' && senden === 'ja') actions.notify(`${route.query.get('info')} ist verbunden und darf senden.`);
+    else if (g === 'verbunden' && senden === 'fehlt') actions.notify(`${route.query.get('info')} ist verbunden, aber bei Google wurde das Senderecht nicht erteilt.`);
+    else if (g === 'verbunden') actions.notify(`${route.query.get('info')} ist verbunden. Mails und Termine kommen in den nächsten Minuten.`);
     if (g === 'fehler') actions.fail(new Error(route.query.get('info') || 'Verbinden hat nicht geklappt.'));
   }, []);
 
@@ -1135,11 +1168,11 @@ function GoogleAccounts() {
   }
   // Anmeldung im Inkognito-Fenster: nur den Link holen. Das CRM bleibt hier angemeldet, im Inkognito-Fenster braucht
   // es keine neue Anmeldung mit Code, die den Claude-Connector trennen würde.
-  async function incognito() {
+  async function incognito(addr = address.trim(), senden = false, zweck = '') {
     setBusy(true);
     try {
-      const url = await db.googleStart(address.trim());
-      setLink(url);
+      const url = await db.googleStart(addr, senden);
+      setLink({ url, address: addr, zweck });
       await navigator.clipboard.writeText(url).then(() => actions.notify('Link kopiert. Er gilt 15 Minuten.')).catch(() => {});
     } catch (e) { actions.fail(e); } finally { setBusy(false); }
   }
@@ -1152,26 +1185,34 @@ function GoogleAccounts() {
     try { await db.rpc('google_konto_trennen', { kid: k.id }); await load(); } catch (e) { actions.fail(e); }
   }
 
-  if (DEMO) return null;
   return html`<div class="field"><span>Postfach und Kalender</span>
     ${list === null ? html`<p class="muted small">Lädt …</p>` : list.map((k) => html`<div class="google-acc" key=${k.id}>
       <div><strong>${k.address}</strong>
         <div class="muted small">${k.status === 'fehler' ? `Fehler: ${k.fehler}`
-          : k.letzter_lauf ? `${k.mails} Mails, ${k.termine} Termine, zuletzt ${relDate(k.letzter_lauf)}` : 'Wird gleich zum ersten Mal abgeglichen.'}</div></div>
-      <button type="button" class="btn ghost xs danger" onClick=${() => disconnect(k)}>Trennen</button>
+          : k.letzter_lauf ? `${k.mails} Mails, ${k.termine} Termine, zuletzt ${relDate(k.letzter_lauf)}` : 'Wird gleich zum ersten Mal abgeglichen.'}</div>
+        <div class="muted small">${k.darf_senden ? 'Kann senden' : 'Nur lesen'}</div></div>
+      <div class="google-acc-actions">
+        ${k.darf_senden
+    ? html`<button type="button" class="btn ghost xs" disabled=${busy} onClick=${() => incognito(k.address, false, 'lesen')}>Senderecht entfernen</button>`
+    : html`<button type="button" class="btn xs" disabled=${busy} onClick=${() => incognito(k.address, true, 'senden')}>Senden freischalten</button>`}
+        <button type="button" class="btn ghost xs danger" onClick=${() => disconnect(k)}>Trennen</button>
+      </div>
     </div>`)}
     <p class="muted small">Verbinde dein Google-Konto, dann holt das CRM alle paar Minuten deine Mails (ohne Newsletter) und Termine, auch wenn kein Rechner läuft. Nur du siehst sie.</p>
     <label class="field"><span>Google-Adresse</span>
       <input type="email" value=${address} onInput=${(e) => setAddress(e.target.value)} /></label>
     <div class="form-actions">
       <button type="button" class="btn primary" disabled=${busy || !address.includes('@')} onClick=${connect}>Mit Google verbinden</button>
-      <button type="button" class="btn" disabled=${busy || !address.includes('@')} onClick=${incognito}>Link fürs Inkognito-Fenster</button>
+      <button type="button" class="btn" disabled=${busy || !address.includes('@')} onClick=${() => incognito()}>Link fürs Inkognito-Fenster</button>
       ${list?.length > 0 && html`<button type="button" class="btn" disabled=${busy} onClick=${syncNow}>Jetzt abgleichen</button>`}
     </div>
-    ${link && html`<label class="field"><span>Link für ${address.trim()}, 15 Minuten gültig</span>
-      <input readonly value=${link} onFocus=${(e) => e.target.select()} /></label>
+    ${link && html`<label class="field"><span>Link für ${link.address}, 15 Minuten gültig</span>
+      <input readonly value=${link.url} onFocus=${(e) => e.target.select()} /></label>
       <p class="muted small">In Chrome ein Inkognito-Fenster öffnen (Strg+Umschalt+N), den Link einfügen, mit diesem Postfach anmelden und zustimmen.
-        Danach kann das Fenster zu, auch wenn es die CRM-Anmeldung zeigt. Hier erscheint das Konto dann von selbst.</p>`}
+        Danach kann das Fenster zu, auch wenn es die CRM-Anmeldung zeigt. Hier erscheint das Konto dann von selbst.</p>
+      ${link.zweck === 'senden' && html`<p class="muted small">Bei Google steht dann zusätzlich, dass das CRM in deinem Namen Mails senden darf.
+        Verschickt wird trotzdem nur, was du hier selbst mit „Senden“ abschickst. Claude kann nicht senden.</p>`}
+      ${link.zweck === 'lesen' && html`<p class="muted small">Danach hat das CRM für dieses Postfach wieder nur Leserechte.</p>`}`}
   </div>`;
 }
 
@@ -1354,13 +1395,14 @@ function LabelPicker({ all, value, onChange }) {
 }
 
 function ContactActions({ phones = [], emails = [], website }) {
+  const kannSenden = useKannSenden();
   if (!phones.length && !emails.length && !website) return null;
   return html`<div class="contact-actions">
     ${phones.map((ph) => html`<span class="btn-group" key=${'t' + ph}>
       <a class="btn" href=${'tel:' + ph.replace(/[^\d+]/g, '')}><${Icon} n="phone" />${ph}</a>
       <a class="btn" href=${'https://wa.me/' + waNumber(ph)} target="_blank" rel="noopener" title="WhatsApp" aria-label="WhatsApp"><${Icon} n="chat" /></a>
     </span>`)}
-    ${emails.map((m) => html`<a class="btn" key=${'m' + m} href=${'mailto:' + m}><${Icon} n="mail" />${m}</a>`)}
+    ${emails.map((m) => html`<a class="btn" key=${'m' + m} href=${kannSenden ? `#/mail/neu?an=${encodeURIComponent(m)}` : 'mailto:' + m}><${Icon} n="mail" />${m}</a>`)}
     ${website && html`<a class="btn" href=${safeUrl(website)} target="_blank" rel="noopener"><${Icon} n="link" />${website.replace(/^https?:\/\//, '').replace(/\/$/, '')}</a>`}
   </div>`;
 }
@@ -1880,6 +1922,7 @@ function historyText(e, idx) {
 
 function CardSheet({ id, query }) {
   const { idx, projects, stages, persons, organizations, actions, isGuest, users, me, project_shares } = useApp();
+  const kannSenden = useKannSenden();
   const isNew = id === 'neu';
   const card = isNew ? null : idx.card.get(Number(id));
   // Mails zum Deal: vom Kontakt, ohne Kontakt von allen Kontakten der Firma. Gäste sehen nie Mails.
@@ -2110,7 +2153,9 @@ function CardSheet({ id, query }) {
       <div class="field"><span>Kontakt</span>
         <${Combobox} items=${persons} value=${form.person_id} onChange=${pickPerson} placeholder="Kontakt suchen oder neu anlegen"
           label=${(p) => p.name} sub=${(p) => idx.org.get(p.org_id)?.name} href=${(p) => `#/kontakt/${p.id}`}
-          onCreate=${async (name) => (await actions.save('persons', { name })).id} /></div>
+          onCreate=${async (name) => (await actions.save('persons', { name })).id} />
+        ${kannSenden && card && person?.emails?.[0] && html`<a class="btn sm mail-write" href=${`#/mail/neu?an=${encodeURIComponent(person.emails[0])}`}
+          onClick=${(e) => { if (dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) e.preventDefault(); }}><${Icon} n="mail" />Mail schreiben</a>`}</div>
       <div class="field"><span>Firma</span>
         <${Combobox} items=${organizations} value=${form.org_id} onChange=${(v) => set('org_id', v)} placeholder="Firma suchen oder neu anlegen"
           label=${(o) => o.name} href=${(o) => `#/firma/${o.id}`}
@@ -3200,7 +3245,8 @@ function MailboxPage() {
   const empty = text || box ? 'Keine passenden Mails.'
     : view === 'inbox' ? 'Der Posteingang ist leer.' : 'Noch keine Mails. Sie kommen über den Abgleich aus den angebundenen Postfächern.';
   return html`<div class="page">
-    <${PageHead} title="Postfach" count=${!text ? (box ? boxes.find(([b]) => b === box)?.[1] ?? 0 : total) : null} />
+    <${PageHead} title="Postfach" count=${!text ? (box ? boxes.find(([b]) => b === box)?.[1] ?? 0 : total) : null}
+      action=${html`<a class="btn primary" href="#/mail/neu"><${Icon} n="mail" />Neue Mail</a>`} />
     <div class="toolbar wrap">
       <${SearchBox} value=${q} onInput=${setQ} placeholder="Betreff, Absender, Text" />
       <div class="seg small" role="group" aria-label="Ansicht">
@@ -3221,6 +3267,7 @@ function MailboxPage() {
 
 function EmailItem({ mail: m, people = [], showBox = false }) {
   const { actions } = useApp();
+  const kannSenden = useKannSenden();
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState(null);
   const [showQuote, setShowQuote] = useState(false);
@@ -3239,6 +3286,9 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
   const main = body && cut > 0 ? body.slice(0, cut).trimEnd() : body;
   const quote = body && cut > 0 ? body.slice(cut) : '';
   const gmailUrl = m.gmail_id ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(m.mailbox)}#all/${m.gmail_id}` : null;
+  const replyHref = `#/mail/neu?antwort=${m.id}`;
+  // „Allen antworten“ nur, wenn außer dem Gegenüber noch jemand dabei ist
+  const weitere = [...to, ...(m.cc_emails || [])].filter((a) => a.toLowerCase() !== m.mailbox.toLowerCase()).length;
   const person = people[0];
   const taskHref = person ? `#/karte/neu?kontakt=${person.id}&titel=${encodeURIComponent(m.subject || '')}` : null;
   const files = m.attachments || [];
@@ -3256,7 +3306,8 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
       <span class="mail-end">
         <span class="mail-date" title=${fullDate(m.sent_at)}>${mailDate(m.sent_at)}</span>
         <span class="mail-actions" onClick=${(e) => e.stopPropagation()}>
-          ${gmailUrl && html`<a class="icon-btn sm" href=${gmailUrl} target="_blank" rel="noopener" title="In Gmail öffnen und antworten" aria-label="In Gmail antworten"><${Icon} n="reply" /></a>`}
+          ${kannSenden ? html`<a class="icon-btn sm" href=${replyHref} title="Antworten" aria-label="Antworten"><${Icon} n="reply" /></a>`
+    : gmailUrl && html`<a class="icon-btn sm" href=${gmailUrl} target="_blank" rel="noopener" title="In Gmail öffnen und antworten" aria-label="In Gmail antworten"><${Icon} n="reply" /></a>`}
           ${taskHref && html`<a class="icon-btn sm" href=${taskHref} title=${`Aufgabe mit ${person.name} anlegen`} aria-label="Aufgabe anlegen"><${Icon} n="board" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/termin/neu?gast=${person.id}`} title=${`Termin mit ${person.name}`} aria-label="Termin einladen"><${Icon} n="calendar" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/kontakt/${person.id}`} title=${`Kontakt ${person.name} öffnen`} aria-label="Kontakt öffnen"><${Icon} n="person" /></a>`}
@@ -3272,7 +3323,9 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
         ${quote && showQuote && html`<div class="mail-text quote">${quote}</div>`}`}
       ${files.length > 0 && html`<p class="meta"><${Icon} n="clip" /> Anhänge: ${files.join(', ')}</p>`}
       <div class="mail-buttons">
-        ${gmailUrl && html`<a class="btn sm" href=${gmailUrl} target="_blank" rel="noopener"><${Icon} n="reply" />In Gmail antworten</a>`}
+        ${kannSenden && html`<a class="btn sm" href=${replyHref}><${Icon} n="reply" />Antworten</a>`}
+        ${kannSenden && weitere > (out ? 1 : 0) && html`<a class="btn sm" href=${replyHref + '&alle=1'}><${Icon} n="reply" />Allen antworten</a>`}
+        ${gmailUrl && html`<a class="btn sm" href=${gmailUrl} target="_blank" rel="noopener"><${Icon} n=${kannSenden ? 'link' : 'reply'} />${kannSenden ? 'In Gmail öffnen' : 'In Gmail antworten'}</a>`}
         ${taskHref && html`<a class="btn sm" href=${taskHref}><${Icon} n="board" />Aufgabe anlegen</a>`}
         ${person && html`<a class="btn sm" href=${`#/termin/neu?gast=${person.id}`}><${Icon} n="calendar" />Termin einladen</a>`}
         <${ClaudeButton} prompt=${claudeAsk.mail(m)} />
@@ -3280,6 +3333,178 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
       </div>
     </div>`}
   </article>`;
+}
+
+// ---------------------------------------------------------------------------
+// Mail schreiben: neue Mail oder Antwort. Geschickt wird über das Postfach der Person (Edge Function
+// google-abgleich, /senden), nur aus Postfächern mit Senderecht und nur, wenn sie selbst auf „Senden“ klickt.
+// ---------------------------------------------------------------------------
+const MAX_ANHANG = 20 * 1024 * 1024;
+const adressTeile = (s) => (String(s || '').match(/("[^"]*"|[^,;])+/g) || []).map((t) => t.trim()).filter(Boolean);
+const falscheAdresse = (s) => adressTeile(s).find((t) => !/^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;.]+$/.test((t.match(/<([^<>]+)>\s*$/)?.[1] || t).trim()));
+const alsBase64 = (file) => new Promise((ok, no) => {
+  const r = new FileReader();
+  r.onload = () => ok(String(r.result).split(',')[1] || '');
+  r.onerror = () => no(new Error(`${file.name} ließ sich nicht lesen.`));
+  r.readAsDataURL(file);
+});
+
+function RecipientInput({ label, value, onChange, autoFocus }) {
+  const { persons } = useApp();
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const inputRef = useRef(null);
+  useEffect(() => { if (autoFocus) inputRef.current?.focus(); }, []);
+  const token = value.split(/[,;]/).pop().trim();
+  const hits = useMemo(() => {
+    if (token.length < 2) return [];
+    const out = [];
+    for (const p of persons) {
+      for (const e of p.emails || []) if (matches(token, p.name, e)) out.push({ name: p.name, email: e });
+      if (out.length >= 6) break;
+    }
+    return out.slice(0, 6);
+  }, [token, persons]);
+  const pick = (h) => {
+    const rest = value.split(/[,;]/).slice(0, -1).map((s) => s.trim()).filter(Boolean);
+    onChange(`${[...rest, h.email].join(', ')}, `);
+    setOpen(false);
+    setActive(0);
+  };
+  function onKey(e) {
+    if (!open || !hits.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive((x) => Math.min(x + 1, hits.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((x) => Math.max(x - 1, 0)); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pick(hits[active] || hits[0]); }
+    else if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); }
+  }
+  return html`<div class="field"><span>${label}</span><div class="combo">
+    <input ref=${inputRef} type="text" value=${value} autocomplete="off" aria-label=${label} placeholder="Name oder Mailadresse, mehrere mit Komma"
+      onInput=${(e) => { onChange(e.target.value); setOpen(true); setActive(0); }}
+      onBlur=${() => setTimeout(() => setOpen(false), 150)} onKeyDown=${onKey} />
+    ${open && hits.length > 0 && html`<ul class="combo-list" role="listbox">
+      ${hits.map((h, i) => html`<li key=${h.email} class=${i === active ? 'on' : ''} onMouseDown=${(e) => { e.preventDefault(); pick(h); }}>
+        <span>${h.name}</span><span class="muted"> · ${h.email}</span></li>`)}
+    </ul>`}
+  </div></div>`;
+}
+
+function MailSheet({ query }) {
+  const { actions, me } = useApp();
+  const replyId = Number(query.get('antwort')) || null;
+  const replyAll = query.get('alle') === '1';
+  const [boxes, setBoxes] = useState(null);
+  const [orig, setOrig] = useState(null);
+  const [von, setVon] = useState('');
+  const [an, setAn] = useState(query.get('an') || '');
+  const [cc, setCc] = useState('');
+  const [bcc, setBcc] = useState('');
+  const [showCc, setShowCc] = useState(false);
+  const [betreff, setBetreff] = useState(query.get('betreff') || '');
+  const [text, setText] = useState('');
+  const [files, setFiles] = useState([]);
+  const [mitSignatur, setMitSignatur] = useState(true);
+  const [mitVerlauf, setMitVerlauf] = useState(true);
+  const [ladefehler, setLadefehler] = useState('');
+  const [busy, setBusy] = useState(false);
+  const textRef = useRef(null);
+  // Sobald das Fenster steht: bei einer Antwort oder bekanntem Empfänger gleich in den Text
+  useEffect(() => { if (boxes?.length && (replyId || an)) textRef.current?.focus(); }, [boxes === null]);
+  const close = () => back('#/postfach');
+  const dirty = !!text.trim() || files.length > 0 || (!replyId && (an.trim() !== (query.get('an') || '') || !!betreff.trim()));
+  const tryClose = () => { if (!busy && (!dirty || confirm('Mail verwerfen?'))) close(); };
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [list, mail, konten] = await Promise.all([db.mailAbsender(), replyId ? db.get('emails', replyId) : null, ladeKonten()]);
+      if (!alive) return;
+      const saved = ls.get('crm-mail-von');
+      setVon(mail && list.some((b) => b.address === mail.mailbox) ? mail.mailbox
+        : list.some((b) => b.address === saved) ? saved : list[0]?.address || '');
+      setBoxes(list);
+      if (!mail) return;
+      setOrig(mail);
+      // Antwort geht an das Gegenüber. Eigene Adressen bleiben draußen, auch bei „Allen antworten“
+      const eigene = new Set([me, ...konten.map((k) => k.address), ...list.map((b) => b.address)].map((a) => String(a).toLowerCase()));
+      const fremd = (l) => [...new Set(l || [])].filter((a) => !eigene.has(String(a).toLowerCase()));
+      const out = mail.direction === 'out';
+      const zu = out ? fremd(mail.to_emails) : [mail.from_email, ...(replyAll ? fremd(mail.to_emails) : [])];
+      const kopie = replyAll ? fremd(mail.cc_emails).filter((a) => !zu.includes(a)) : [];
+      setAn(zu.join(', '));
+      setCc(kopie.join(', '));
+      setShowCc(kopie.length > 0);
+      const s = mail.subject || '';
+      setBetreff(/^\s*(re|aw|antw):/i.test(s) ? s : `Re: ${s}`);
+    })().catch((e) => { if (alive) setLadefehler(e.message || 'Das Fenster ließ sich nicht laden.'); });
+    return () => { alive = false; };
+  }, []);
+
+  function addFiles(list) {
+    const neu = [...list];
+    if ([...files, ...neu].reduce((s, f) => s + f.size, 0) > MAX_ANHANG) {
+      actions.fail(new Error('Anhänge zusammen höchstens 20 MB.'));
+      return;
+    }
+    setFiles([...files, ...neu]);
+  }
+
+  const zitatKopf = orig ? `Am ${fullDate(orig.sent_at)} schrieb ${orig.from_name ? `${orig.from_name} <${orig.from_email}>` : orig.from_email}:` : '';
+  const aktiv = boxes?.find((b) => b.address === von);
+  const leer = !adressTeile(an).length && !adressTeile(cc).length && !adressTeile(bcc).length;
+  const kannLos = !busy && von && !leer && (text.trim() || files.length > 0);
+
+  async function send() {
+    if (!kannLos) return;
+    const falsch = falscheAdresse(an) || falscheAdresse(cc) || falscheAdresse(bcc);
+    if (falsch) { actions.fail(new Error(`Diese Adresse stimmt nicht: ${falsch}`)); return; }
+    if (!betreff.trim() && !confirm('Ohne Betreff senden?')) return;
+    setBusy(true);
+    try {
+      const selbesPostfach = orig && orig.mailbox === von;
+      await db.mailSend({
+        von, an, cc, bcc, betreff, text, signatur: mitSignatur,
+        anhaenge: await Promise.all(files.map(async (f) => ({ name: f.name, typ: f.type, daten: await alsBase64(f) }))),
+        antwort_auf: selbesPostfach ? orig.gmail_id : null,
+        bezug: orig && !selbesPostfach ? orig.message_id : null,
+        zitat: orig && mitVerlauf ? orig.body || '' : '', zitat_kopf: orig && mitVerlauf ? zitatKopf : '',
+      });
+      ls.set('crm-mail-von', von);
+      actions.notify('Mail gesendet. Sie steht gleich im Postfach.');
+      close();
+    } catch (e) { actions.fail(e); setBusy(false); }
+  }
+
+  return html`<${Sheet} title=${replyId ? (replyAll ? 'Allen antworten' : 'Antworten') : 'Neue Mail'} onClose=${tryClose}
+      action=${boxes?.length > 0 && html`<button type="button" class="btn primary sm" disabled=${!kannLos} onClick=${send}><${Icon} n="mail" />${busy ? 'Sendet …' : 'Senden'}</button>`}>
+    ${ladefehler ? html`<p>${ladefehler}</p>`
+    : boxes === null ? html`<p class="muted">Lädt …</p>`
+    : boxes.length === 0 ? html`<p>Noch darf kein Postfach senden. Schalte es in den Einstellungen bei einem Postfach mit „Senden freischalten“ frei.</p>
+      <a class="btn" href="#/einstellungen"><${Icon} n="settings" />Zu den Einstellungen</a>`
+    : html`<form class="form" onSubmit=${(e) => e.preventDefault()}>
+      <label class="field"><span>Von</span>
+        <select value=${von} onChange=${(e) => setVon(e.target.value)}>
+          ${boxes.map((b) => html`<option key=${b.address} value=${b.address}>${b.name ? `${b.name} <${b.address}>` : b.address}</option>`)}
+        </select></label>
+      ${orig && orig.mailbox !== von && html`<p class="muted small">Die Mail liegt in ${orig.mailbox}. Aus ${von} antwortest du außerhalb des dortigen Verlaufs.</p>`}
+      <${RecipientInput} label="An" value=${an} onChange=${setAn} autoFocus=${!replyId && !an} />
+      ${showCc ? html`<${RecipientInput} label="Cc" value=${cc} onChange=${setCc} /><${RecipientInput} label="Bcc" value=${bcc} onChange=${setBcc} />`
+    : html`<button type="button" class="btn link sm mail-write" onClick=${() => setShowCc(true)}>Cc und Bcc hinzufügen</button>`}
+      <label class="field"><span>Betreff</span><input value=${betreff} onInput=${(e) => setBetreff(e.target.value)} maxlength="500" /></label>
+      <label class="field"><span>Text</span><textarea ref=${textRef} rows="10" value=${text} onInput=${(e) => setText(e.target.value)}></textarea></label>
+      <div class="mail-files">
+        ${files.map((f, i) => html`<span class="chip person" key=${f.name + i}><${Icon} n="clip" />${f.name} · ${fileSize(f.size)}
+          <button type="button" class="chip-x" aria-label=${`${f.name} entfernen`} onClick=${() => setFiles(files.filter((_, j) => j !== i))}>×</button></span>`)}
+        <label class="btn sm"><${Icon} n="clip" />Datei anhängen
+          <input type="file" multiple hidden onChange=${(e) => { addFiles(e.target.files); e.target.value = ''; }} /></label>
+      </div>
+      ${aktiv?.signatur ? html`<label class="check-line"><input type="checkbox" checked=${mitSignatur} onChange=${(e) => setMitSignatur(e.target.checked)} /> Signatur anhängen</label>
+        ${mitSignatur && html`<div class="mail-text quote mail-preview">${aktiv.signatur}</div>`}`
+    : html`<p class="muted small">Für dieses Postfach ist in Gmail keine Signatur hinterlegt.</p>`}
+      ${orig?.body && html`<label class="check-line"><input type="checkbox" checked=${mitVerlauf} onChange=${(e) => setMitVerlauf(e.target.checked)} /> Verlauf anhängen</label>
+        ${mitVerlauf && html`<div class="mail-text quote mail-preview">${zitatKopf}${'\n'}${orig.body}</div>`}`}
+    </form>`}
+  <//>`;
 }
 
 // ---------------------------------------------------------------------------

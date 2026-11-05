@@ -916,6 +916,14 @@ details.more[open] summary { margin-bottom: 12px; }
 .google-acc { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px;
   margin-bottom: 8px; border: 1px solid var(--border); border-radius: 10px; }
 .google-acc strong { font-size: 14px; word-break: break-all; }
+.google-acc-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: none; max-width: 55%; }
+/* Mail schreiben */
+.mail-write { align-self: flex-start; }
+.field .mail-write { margin-top: 2px; }
+.mail-files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mail-files .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; overflow-wrap: anywhere; }
+.mail-files .ico { width: 13px; height: 13px; flex: none; }
+.mail-preview { margin-top: 0; max-height: 150px; overflow: auto; }
 .consent-actions .btn { flex: 1; }
 .form-info { margin: 12px 0 0; color: var(--gold-l); font-size: 14px; }
 

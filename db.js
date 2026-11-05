@@ -139,11 +139,18 @@ const remote = {
   async pushTest() {
     return functionCall('erinnerung', 'test', {});
   },
-  async googleStart(address) {
-    return (await googleCall('start', { address })).url;
+  async googleStart(address, senden = false) {
+    return (await googleCall('start', { address, senden })).url;
   },
   async googleSync() {
     return googleCall('sync', {});
+  },
+  // Mails verschicken: Postfächer mit Senderecht und das Senden selbst (nur mit Login der App)
+  async mailAbsender() {
+    return (await googleCall('absender', {})).konten || [];
+  },
+  async mailSend(mail) {
+    return googleCall('senden', mail);
   },
   // Freigabe für Claude: Supabase ist der Anmeldeserver, diese Seite fragt nur nach Erlaubnis
   async oauthDetails(id) {
@@ -296,6 +303,11 @@ function logDemoUpdate(before, after) {
 export const matchesView = (m, view) => (view === 'inbox' ? (m.in_inbox ?? m.direction === 'in')
   : view === 'out' ? m.direction === 'out' : true);
 
+let demoKonten = [
+  { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true },
+  { id: 2, address: 'team@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 0, termine: 0, darf_senden: false },
+];
+
 const demo = {
   async session() { return { user: { email: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de' } }; },
   async onAuth() {},
@@ -314,7 +326,37 @@ const demo = {
     if (fn === 'my_role') return DEMO_GUEST ? 'gast' : 'owner';
     if (fn === 'crm_users') return DEMO_USERS;
     if (fn === 'log_file') { logDemo(args.cid, 'datei', args.fname); persist(); }
+    if (fn === 'meine_google_konten') return DEMO_GUEST ? [] : demoKonten.map(copy);
+    if (fn === 'google_konto_trennen') demoKonten = demoKonten.filter((k) => k.id !== args.kid);
     return null;
+  },
+  // Postfächer und Senden: nur im Speicher dieses Tabs, verschickt wird nichts
+  async googleStart(address, senden = false) {
+    demoKonten = demoKonten.map((k) => (k.address === address ? { ...k, darf_senden: senden } : k));
+    return location.href;
+  },
+  async googleSync() { return { ok: true }; },
+  async mailAbsender() {
+    return demoKonten.filter((k) => k.darf_senden)
+      .map((k) => ({ address: k.address, name: 'Alex Demo', signatur: 'Alex Demo\nMusterfirma GmbH' }));
+  },
+  async mailSend(mail) {
+    const s = state();
+    const liste = (x) => (String(x || '').match(/[^\s,;<>"]+@[^\s,;<>"]+/g) || []).map((a) => a.toLowerCase());
+    const an = liste(mail.an);
+    s.seq += 1;
+    const m = {
+      id: s.seq, message_id: `<demo-${s.seq}@beispiel.de>`, thread_id: null, mailbox: mail.von, gmail_id: null, direction: 'out',
+      from_email: mail.von, from_name: 'Alex Demo', to_emails: an, cc_emails: liste(mail.cc), subject: mail.betreff, sent_at: now(),
+      body: mail.text, attachments: (mail.anhaenge || []).map((a) => a.name), in_inbox: false, created_at: now(),
+    };
+    s.emails.push(m);
+    s.persons.filter((p) => (p.emails || []).some((e) => an.includes(e.toLowerCase()))).forEach((p) => {
+      s.seq += 1;
+      s.email_persons.push({ id: s.seq, email_id: m.id, person_id: p.id });
+    });
+    persist();
+    return { ok: true };
   },
   // Dateien nur im Speicher dieses Tabs
   async listFiles(prefix) {
