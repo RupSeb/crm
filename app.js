@@ -1447,18 +1447,17 @@ function TeamTile() {
 }
 
 function Overview() {
-  const { cards, meetings, idx, me } = useApp();
+  const { projects, cards, meetings, idx, me } = useApp();
   const [showAll, setShowAll] = useState({});
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
   // Was nur anderen zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
   const open = cards.filter((c) => !c.archived && (assigneesOf(c).length === 0 || assigneesOf(c).includes(me)));
   const todo = open.filter((c) => kind(c) === 'todo' || kind(c) === 'doing');
 
-  // Gruppen nach Dringlichkeit in der Reihenfolge von prioRank: hoch, mittel, ohne, niedrig.
-  // Innerhalb nach Fälligkeit, Überfälliges steht damit oben in seiner Gruppe.
-  const groups = ['Dringend', 'Mittel', 'Ohne Dringlichkeit', 'Niedrig'];
-  const sections = groups.map((title, rank) => [title, todo.filter((c) => prioRank(c) === rank)
-    .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9') || byUpdatedDesc(a, b))])
+  // Eine Gruppe je Projekt, in der Reihenfolge der Projekte (Spalte sort). Darin nach Dringlichkeit in der
+  // Reihenfolge von prioRank (hoch, mittel, ohne, niedrig), bei gleicher Dringlichkeit das zuerst Fällige oben.
+  const sections = projects.map((p) => [p, todo.filter((c) => c.project_id === p.id)
+    .sort((a, b) => prioRank(a) - prioRank(b) || (a.due_date || '9').localeCompare(b.due_date || '9') || byUpdatedDesc(a, b))])
     .filter(([, list]) => list.length > 0);
   const recent = [...meetings].sort(byHeldDesc).slice(0, 6);
   const today = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -1468,16 +1467,15 @@ function Overview() {
     <div class="tiles">
       <${Tile} id="todo" cls="tile-main" title=${html`Zu erledigen <span class="count">${todo.length}</span>`}>
         <${QuickAdd} />
-        ${sections.map(([title, list]) => {
-    // Hoch und Mittel immer ganz, die anderen erst nach „Alle anzeigen“
-    const isRest = title === 'Ohne Dringlichkeit' || title === 'Niedrig';
-    const shown = isRest && !showAll[title] ? list.slice(0, 8) : list;
-    return html`<div class="todo-group" key=${title}>
-            <h3 class=${'group-' + (title === 'Dringend' ? 'urgent' : 'normal')}>
-              ${title} <span class="count">${list.length}</span></h3>
-            ${shown.map((c) => html`<${TodoRow} key=${c.id} card=${c} />`)}
-            ${isRest && list.length > 8 && html`<button class="btn link sm" onClick=${() => setShowAll({ ...showAll, [title]: !showAll[title] })}>
-              ${showAll[title] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>`}
+        ${sections.map(([p, list]) => {
+    // Hoch und Mittel immer ganz, vom Rest bis mindestens 8 Zeilen, alles Weitere nach „Alle anzeigen“
+    const limit = Math.max(8, list.filter((c) => prioRank(c) < 2).length);
+    const shown = showAll[p.id] ? list : list.slice(0, limit);
+    return html`<div class="todo-group" key=${p.id} style=${`--pc:${p.color}`}>
+            <h3 class="group-project"><span class="dot"></span>${p.name} <span class="count">${list.length}</span></h3>
+            ${shown.map((c) => html`<${TodoRow} key=${c.id} card=${c} noProject />`)}
+            ${list.length > limit && html`<button class="btn link sm" onClick=${() => setShowAll({ ...showAll, [p.id]: !showAll[p.id] })}>
+              ${showAll[p.id] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>`}
           </div>`;
   })}
         ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
@@ -1547,12 +1545,12 @@ function QuickAdd() {
   </form>`;
 }
 
-function TodoRow({ card, waiting, follow }) {
+function TodoRow({ card, waiting, follow, noProject }) {
   const { idx, stages, actions } = useApp();
   const [done, setDone] = useState(false);
   const pr = idx.project.get(card.project_id);
   const person = idx.person.get(card.person_id);
-  const meta = [pr?.name, follow ? idx.stage.get(card.stage_id)?.name : '', person?.name,
+  const meta = [noProject ? '' : pr?.name, follow ? idx.stage.get(card.stage_id)?.name : '', person?.name,
     waiting ? `seit ${relDate(card.updated_at).replace(/^vor /, '')}` : ''].filter(Boolean).join(' · ');
   // Wiedervorlage ab heute neu setzen, z. B. nach dem Nachhaken
   async function later(e, days) {
