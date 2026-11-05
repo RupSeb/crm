@@ -2682,9 +2682,9 @@ function CalendarPage() {
   </div>`;
 }
 
-// Neuer Termin mit Einladungen: Das CRM darf die Kalender nur lesen. Es füllt deshalb
-// Google Kalender im gewählten Konto vor, Speichern dort verschickt die Einladungen.
-const pad2 = (n) => String(n).padStart(2, '0');
+// Neuer Termin mit Einladungen. Hat das Postfach das Termin-Recht, legt das CRM den Termin direkt an und Google
+// verschickt die Einladungen. Sonst füllt es Google Kalender im gewählten Konto vor, Speichern dort verschickt sie.
+const pad2= (n) => String(n).padStart(2, '0');
 function nextHalfHour() {
   const d = new Date(Date.now() + 30 * 6e4);
   d.setMinutes(d.getMinutes() < 30 ? 30 : 60, 0, 0);
@@ -2702,16 +2702,23 @@ function gcalTemplateUrl({ title, start, end, guests, details, location, meet, a
 }
 
 function NewEventSheet({ query }) {
-  const { idx, persons, events } = useApp();
+  const { idx, persons, events, actions } = useApp();
+  const konten = useGoogleKonten();
+  const [busy, setBusy] = useState(false);
   const close = () => back('#/kalender');
-  // Konten: die eigenen Kalender, die das CRM kennt (Kalender-ID = Mailadresse des Kontos)
+  // Konten: die eigenen Kalender, die das CRM kennt (Kalender-ID = Mailadresse des Kontos). Kalender von Kollegen
+  // derselben Domain kommen nicht in die Auswahl.
   const accounts = useMemo(() => {
     const m = new Map();
+    const eigene = new Set(konten.map((k) => k.address));
+    const domains = new Set(konten.map((k) => k.address.split('@')[1]));
     events.forEach((e) => {
-      if (e.calendar_id.includes('@') && !e.calendar_id.endsWith('calendar.google.com')) m.set(e.calendar_id, e.calendar_name);
+      if (!e.calendar_id.includes('@') || e.calendar_id.endsWith('calendar.google.com')) return;
+      if (eigene.has(e.calendar_id) || !domains.has(e.calendar_id.split('@')[1])) m.set(e.calendar_id, e.calendar_name);
     });
+    konten.forEach((k) => { if (!m.has(k.address)) m.set(k.address, k.address.split('@')[1]); });
     return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], 'de'));
-  }, [events]);
+  }, [events, konten]);
   const startDefault = (() => {
     const d = nextHalfHour();
     const day = query.get('tag') || localDay(d);
@@ -2734,6 +2741,15 @@ function NewEventSheet({ query }) {
     const saved = ls.get('crm-invite-account');
     return accounts.some(([id]) => id === saved) ? saved : accounts[0]?.[0] || '';
   });
+  // Die Konten kommen erst nach dem Laden dazu: dann das zuletzt genutzte oder erste mit Termin-Recht vorwählen,
+  // solange die Person nicht selbst gewählt hat
+  const selbstGewaehlt = useRef(false);
+  useEffect(() => {
+    if (selbstGewaehlt.current) return;
+    const saved = ls.get('crm-invite-account');
+    setAccount(accounts.some(([id]) => id === saved) ? saved : konten.find((k) => k.darf_termine)?.address || accounts[0]?.[0] || '');
+  }, [accounts, konten]);
+  const direkt = konten.some((k) => k.address === account && k.darf_termine);
 
   const start = new Date(`${day}T${from || '09:00'}`);
   const end = new Date(start.getTime() + minutes * 6e4);
@@ -2751,19 +2767,32 @@ function NewEventSheet({ query }) {
   const addExtra = () => { extra.split(/[\s,;]+/).forEach((m) => addGuest(m)); setExtra(''); };
   const valid = title.trim() && !Number.isNaN(start.getTime()) && minutes > 0;
 
-  function submit(e) {
-    e.preventDefault();
-    if (!valid) return;
+  async function submit() {
+    if (!valid || busy) return;
     ls.set('crm-invite-account', account);
-    window.open(gcalTemplateUrl({
-      title: title.trim(), start, end, guests: guests.map((g) => g.email),
-      details: details.trim(), location: location.trim(), meet, account,
-    }), '_blank', 'noopener');
-    close();
+    if (!direkt) {
+      window.open(gcalTemplateUrl({
+        title: title.trim(), start, end, guests: guests.map((g) => g.email),
+        details: details.trim(), location: location.trim(), meet, account,
+      }), '_blank', 'noopener');
+      close();
+      return;
+    }
+    setBusy(true);
+    try {
+      await db.termin({
+        von: account, titel: title.trim(), start: start.toISOString(), ende: end.toISOString(),
+        zeitzone: Intl.DateTimeFormat().resolvedOptions().timeZone, gaeste: guests.map((g) => g.email),
+        ort: location.trim(), beschreibung: details.trim(), meet,
+      });
+      await actions.load();
+      actions.notify(guests.length ? 'Termin angelegt, die Einladungen sind raus.' : 'Termin angelegt.');
+      close();
+    } catch (e) { actions.fail(e); setBusy(false); }
   }
 
   return html`<${Sheet} title="Neuer Termin" onClose=${close}>
-    <form class="form" onSubmit=${submit}>
+    <form class="form" onSubmit=${(e) => e.preventDefault()}>
       <label class="field"><span>Titel</span>
         <input value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="z. B. Erstgespräch Musterfirma" required /></label>
       <div class="field-row">
@@ -2785,12 +2814,14 @@ function NewEventSheet({ query }) {
         <textarea rows="3" value=${details} onInput=${(e) => setDetails(e.target.value)}></textarea></label>
       <label class="check-line"><input type="checkbox" checked=${meet} onChange=${(e) => setMeet(e.target.checked)} /> Google Meet hinzufügen</label>
       <label class="field"><span>Einladen aus Kalender</span>
-        <select value=${account} onChange=${(e) => setAccount(e.target.value)}>
+        <select value=${account} onChange=${(e) => { selbstGewaehlt.current = true; setAccount(e.target.value); }}>
           ${accounts.map(([id, name]) => html`<option key=${id} value=${id}>${name} (${id})</option>`)}
           <option value="">Konto, das im Browser angemeldet ist</option>
         </select></label>
-      <button class="btn primary full" disabled=${!valid}><${Icon} n="calendar" />In Google Kalender öffnen</button>
-      <p class="muted small">Google Kalender öffnet sich mit allem ausgefüllt. Dort auf „Speichern“ klicken, dann verschickt Google die Einladungen. Fehlt der Meet-Link, dort „Google Meet-Videokonferenz hinzufügen“ wählen. Im CRM erscheint der Termin nach dem nächsten Abgleich, meist nach wenigen Minuten.</p>
+      <button type="button" class="btn primary full" disabled=${!valid || busy} onClick=${submit}><${Icon} n="calendar" />${busy ? 'Legt an …'
+    : !direkt ? 'In Google Kalender öffnen' : guests.length ? 'Anlegen und einladen' : 'Termin anlegen'}</button>
+      ${direkt ? html`<p class="muted small">Der Termin kommt direkt in diesen Kalender. Gäste bekommen die Einladung von Google per Mail.</p>`
+    : html`<p class="muted small">Google Kalender öffnet sich mit allem ausgefüllt. Dort auf „Speichern“ klicken, dann verschickt Google die Einladungen. Fehlt der Meet-Link, dort „Google Meet-Videokonferenz hinzufügen“ wählen. Im CRM erscheint der Termin nach dem nächsten Abgleich, meist nach wenigen Minuten.</p>`}
     </form>
   <//>`;
 }
@@ -2808,7 +2839,9 @@ function TodayEvents() {
 
 function EventSheet({ event: ev }) {
   const { idx, persons, meetings, actions } = useApp();
+  const konten = useGoogleKonten();
   const [full, setFull] = useState(null);
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (ev) db.get('events', ev.id).then(setFull).catch(() => setFull({}));
   }, [ev?.id]);
@@ -2830,6 +2863,21 @@ function EventSheet({ event: ev }) {
     } catch { /* fail */ }
   }
 
+  // Absagen: nur eigene, noch kommende Termine aus einem Kalender mit Termin-Recht. Ändern geht weiter im Google Kalender.
+  const kannAbsagen = full?.event_id && !isPast(ev) && konten.some((k) => k.address === ev.calendar_id && k.darf_termine)
+    && (!ev.organizer || ev.organizer.toLowerCase() === ev.calendar_id.toLowerCase());
+  async function absagen() {
+    const n = (ev.attendees || []).filter((a) => a.toLowerCase() !== ev.calendar_id.toLowerCase()).length;
+    if (!confirm(`„${ev.title}“ absagen?${n ? ` ${n === 1 ? 'Der Gast bekommt' : `${n} Gäste bekommen`} eine Absage von Google.` : ''}`)) return;
+    setBusy(true);
+    try {
+      await db.terminAbsagen({ von: ev.calendar_id, event_id: full.event_id });
+      await actions.load();
+      actions.notify('Termin abgesagt.');
+      close();
+    } catch (e) { actions.fail(e); setBusy(false); }
+  }
+
   return html`<${Sheet} title="Termin" onClose=${close}>
     <div class="form">
       <h2 class="ev-sheet-title">${ev.title}</h2>
@@ -2839,6 +2887,7 @@ function EventSheet({ event: ev }) {
         ${ev.meet_url && html`<a class="btn primary" href=${ev.meet_url} target="_blank" rel="noopener"><${Icon} n="video" />Beitreten</a>`}
         ${ev.html_link && html`<a class="btn" href=${ev.html_link} target="_blank" rel="noopener"><${Icon} n="calendar" />Im Google Kalender</a>`}
         ${meeting && html`<a class="btn" href=${`#/meeting/${meeting.id}`}><${Icon} n="mic" />Meeting-Zusammenfassung</a>`}
+        ${kannAbsagen && html`<button type="button" class="btn ghost danger" disabled=${busy} onClick=${absagen}>${busy ? 'Sagt ab …' : 'Absagen'}</button>`}
       </div>
       ${(ev.attendees || []).length > 0 && html`<div class="field"><span>Teilnehmer</span>
         <div class="participants">

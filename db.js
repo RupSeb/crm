@@ -152,6 +152,13 @@ const remote = {
   async mailSend(mail) {
     return googleCall('senden', mail);
   },
+  // Termine direkt im eigenen Kalender anlegen und absagen
+  async termin(t) {
+    return googleCall('termin', t);
+  },
+  async terminAbsagen(t) {
+    return googleCall('termin-absagen', t);
+  },
   // Freigabe für Claude: Supabase ist der Anmeldeserver, diese Seite fragt nur nach Erlaubnis
   async oauthDetails(id) {
     return oauthCall('GET', `authorizations/${encodeURIComponent(id)}`);
@@ -355,6 +362,24 @@ const demo = {
       s.seq += 1;
       s.email_persons.push({ id: s.seq, email_id: m.id, person_id: p.id });
     });
+    persist();
+    return { ok: true };
+  },
+  async termin(t) {
+    const s = state();
+    s.seq += 1;
+    const gaeste = t.gaeste || [];
+    s.events.push({
+      id: s.seq, calendar_id: t.von, calendar_name: 'Demo', calendar_color: '#7fa7c9', event_id: `demo${s.seq}`, ical_uid: `demo${s.seq}`,
+      title: t.titel, start_at: t.start, end_at: t.ende, all_day: false, location: t.ort || null, meet_url: t.meet ? 'https://meet.google.com/demo' : null,
+      html_link: null, attendees: gaeste, organizer: t.von, description: t.beschreibung || null, status: 'confirmed', updated_at: now(),
+    });
+    persist();
+    return { ok: true };
+  },
+  async terminAbsagen(t) {
+    const s = state();
+    s.events = s.events.filter((e) => !(e.calendar_id === t.von && e.event_id === t.event_id));
     persist();
     return { ok: true };
   },
