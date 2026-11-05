@@ -1472,7 +1472,7 @@ function Overview() {
     const limit = Math.max(8, list.filter((c) => prioRank(c) < 2).length);
     const shown = showAll[p.id] ? list : list.slice(0, limit);
     return html`<div class="todo-group" key=${p.id} style=${`--pc:${p.color}`}>
-            <h3 class="group-project"><span class="dot"></span>${p.name} <span class="count">${list.length}</span></h3>
+            <h3 class="group-project">${p.name} <span class="count">${list.length}</span></h3>
             ${shown.map((c) => html`<${TodoRow} key=${c.id} card=${c} noProject />`)}
             ${list.length > limit && html`<button class="btn link sm" onClick=${() => setShowAll({ ...showAll, [p.id]: !showAll[p.id] })}>
               ${showAll[p.id] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>`}
