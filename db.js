@@ -304,8 +304,8 @@ export const matchesView = (m, view) => (view === 'inbox' ? (m.in_inbox ?? m.dir
   : view === 'out' ? m.direction === 'out' : true);
 
 let demoKonten = [
-  { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true },
-  { id: 2, address: 'team@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 0, termine: 0, darf_senden: false },
+  { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true, darf_termine: true },
+  { id: 2, address: 'team@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 0, termine: 0, darf_senden: false, darf_termine: false },
 ];
 
 const demo = {
@@ -332,7 +332,7 @@ const demo = {
   },
   // Postfächer und Senden: nur im Speicher dieses Tabs, verschickt wird nichts
   async googleStart(address, senden = false) {
-    demoKonten = demoKonten.map((k) => (k.address === address ? { ...k, darf_senden: senden } : k));
+    demoKonten = demoKonten.map((k) => (k.address === address ? { ...k, darf_senden: senden, darf_termine: senden } : k));
     return location.href;
   },
   async googleSync() { return { ok: true }; },

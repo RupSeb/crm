@@ -1143,6 +1143,9 @@ function GoogleAccounts() {
   const [address, setAddress] = useState(session.user?.email || '');
   const [busy, setBusy] = useState(false);
   const [link, setLink] = useState(null);
+  const linkRef = useRef(null);
+  // Der Link erscheint beim Postfach, und zwar sichtbar, damit klar ist, dass der Klick angekommen ist
+  useEffect(() => { linkRef.current?.scrollIntoView({ block: 'nearest' }); }, [link]);
   const load = () => ladeKonten(true).then(setList);
   // Zurück aus dem Inkognito-Fenster: das neue Konto erscheint von selbst
   useEffect(() => {
@@ -1168,14 +1171,24 @@ function GoogleAccounts() {
   }
   // Anmeldung im Inkognito-Fenster: nur den Link holen. Das CRM bleibt hier angemeldet, im Inkognito-Fenster braucht
   // es keine neue Anmeldung mit Code, die den Claude-Connector trennen würde.
-  async function incognito(addr = address.trim(), senden = false, zweck = '') {
+  async function incognito(addr = address.trim(), senden = false, zweck = '', kid = null) {
     setBusy(true);
     try {
       const url = await db.googleStart(addr, senden);
-      setLink({ url, address: addr, zweck });
-      await navigator.clipboard.writeText(url).then(() => actions.notify('Link kopiert. Er gilt 15 Minuten.')).catch(() => {});
+      const kopiert = await navigator.clipboard.writeText(url).then(() => true).catch(() => false);
+      setLink({ url, address: addr, zweck, kid, kopiert });
+      if (kopiert) actions.notify('Link kopiert. Er gilt 15 Minuten.');
     } catch (e) { actions.fail(e); } finally { setBusy(false); }
   }
+  const linkBlock = link && html`<div class="google-link" ref=${linkRef}>
+    <label class="field"><span>Link für ${link.address}, 15 Minuten gültig${link.kopiert ? ', schon kopiert' : ''}</span>
+      <input readonly value=${link.url} onFocus=${(e) => e.target.select()} /></label>
+    <p class="muted small">In Chrome ein Inkognito-Fenster öffnen (Strg+Umschalt+N), den Link einfügen, mit diesem Postfach anmelden und zustimmen.
+      Danach kann das Fenster zu, auch wenn es die CRM-Anmeldung zeigt. Hier erscheint das Konto dann von selbst.</p>
+    ${link.zweck === 'senden' && html`<p class="muted small">Bei Google steht dann zusätzlich, dass das CRM in deinem Namen Mails senden und Termine in deinen Kalendern ändern darf.
+      Verschickt wird trotzdem nur, was du hier selbst abschickst. Claude kann nicht senden.</p>`}
+    ${link.zweck === 'lesen' && html`<p class="muted small">Danach hat das CRM für dieses Postfach wieder nur Leserechte.</p>`}
+  </div>`;
   async function syncNow() {
     setBusy(true);
     try { await db.googleSync(); await load(); actions.notify('Abgeglichen.'); } catch (e) { actions.fail(e); } finally { setBusy(false); }
@@ -1186,18 +1199,17 @@ function GoogleAccounts() {
   }
 
   return html`<div class="field"><span>Postfach und Kalender</span>
-    ${list === null ? html`<p class="muted small">Lädt …</p>` : list.map((k) => html`<div class="google-acc" key=${k.id}>
+    ${list === null ? html`<p class="muted small">Lädt …</p>` : list.map((k) => html`<div key=${k.id}><div class="google-acc">
       <div><strong>${k.address}</strong>
         <div class="muted small">${k.status === 'fehler' ? `Fehler: ${k.fehler}`
           : k.letzter_lauf ? `${k.mails} Mails, ${k.termine} Termine, zuletzt ${relDate(k.letzter_lauf)}` : 'Wird gleich zum ersten Mal abgeglichen.'}</div>
-        <div class="muted small">${k.darf_senden ? 'Kann senden' : 'Nur lesen'}</div></div>
+        <div class="muted small">${k.darf_senden && k.darf_termine ? 'Kann senden und Termine anlegen' : k.darf_senden ? 'Kann senden' : 'Nur lesen'}</div></div>
       <div class="google-acc-actions">
-        ${k.darf_senden
-    ? html`<button type="button" class="btn ghost xs" disabled=${busy} onClick=${() => incognito(k.address, false, 'lesen')}>Senderecht entfernen</button>`
-    : html`<button type="button" class="btn xs" disabled=${busy} onClick=${() => incognito(k.address, true, 'senden')}>Senden freischalten</button>`}
+        ${!(k.darf_senden && k.darf_termine) && html`<button type="button" class="btn xs" disabled=${busy} onClick=${() => incognito(k.address, true, 'senden', k.id)}>${k.darf_senden ? 'Termine freischalten' : 'Senden und Termine freischalten'}</button>`}
+        ${k.darf_senden && html`<button type="button" class="btn ghost xs" disabled=${busy} onClick=${() => incognito(k.address, false, 'lesen', k.id)}>Nur noch lesen</button>`}
         <button type="button" class="btn ghost xs danger" onClick=${() => disconnect(k)}>Trennen</button>
       </div>
-    </div>`)}
+    </div>${link?.kid === k.id && linkBlock}</div>`)}
     <p class="muted small">Verbinde dein Google-Konto, dann holt das CRM alle paar Minuten deine Mails (ohne Newsletter) und Termine, auch wenn kein Rechner läuft. Nur du siehst sie.</p>
     <label class="field"><span>Google-Adresse</span>
       <input type="email" value=${address} onInput=${(e) => setAddress(e.target.value)} /></label>
@@ -1206,13 +1218,7 @@ function GoogleAccounts() {
       <button type="button" class="btn" disabled=${busy || !address.includes('@')} onClick=${() => incognito()}>Link fürs Inkognito-Fenster</button>
       ${list?.length > 0 && html`<button type="button" class="btn" disabled=${busy} onClick=${syncNow}>Jetzt abgleichen</button>`}
     </div>
-    ${link && html`<label class="field"><span>Link für ${link.address}, 15 Minuten gültig</span>
-      <input readonly value=${link.url} onFocus=${(e) => e.target.select()} /></label>
-      <p class="muted small">In Chrome ein Inkognito-Fenster öffnen (Strg+Umschalt+N), den Link einfügen, mit diesem Postfach anmelden und zustimmen.
-        Danach kann das Fenster zu, auch wenn es die CRM-Anmeldung zeigt. Hier erscheint das Konto dann von selbst.</p>
-      ${link.zweck === 'senden' && html`<p class="muted small">Bei Google steht dann zusätzlich, dass das CRM in deinem Namen Mails senden darf.
-        Verschickt wird trotzdem nur, was du hier selbst mit „Senden“ abschickst. Claude kann nicht senden.</p>`}
-      ${link.zweck === 'lesen' && html`<p class="muted small">Danach hat das CRM für dieses Postfach wieder nur Leserechte.</p>`}`}
+    ${link && !link.kid && linkBlock}
   </div>`;
 }
 
@@ -3479,7 +3485,7 @@ function MailSheet({ query }) {
       action=${boxes?.length > 0 && html`<button type="button" class="btn primary sm" disabled=${!kannLos} onClick=${send}><${Icon} n="mail" />${busy ? 'Sendet …' : 'Senden'}</button>`}>
     ${ladefehler ? html`<p>${ladefehler}</p>`
     : boxes === null ? html`<p class="muted">Lädt …</p>`
-    : boxes.length === 0 ? html`<p>Noch darf kein Postfach senden. Schalte es in den Einstellungen bei einem Postfach mit „Senden freischalten“ frei.</p>
+    : boxes.length === 0 ? html`<p>Noch darf kein Postfach senden. Schalte es in den Einstellungen bei einem Postfach mit „Senden und Termine freischalten“ frei.</p>
       <a class="btn" href="#/einstellungen"><${Icon} n="settings" />Zu den Einstellungen</a>`
     : html`<form class="form" onSubmit=${(e) => e.preventDefault()}>
       <label class="field"><span>Von</span>
