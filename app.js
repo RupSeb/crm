@@ -1036,8 +1036,7 @@ function PushSettings() {
       ? 'Am iPhone gehen Mitteilungen nur, wenn das CRM als App auf dem Home-Bildschirm liegt: in Safari Teilen → „Zum Home-Bildschirm“, das CRM von dort öffnen und hier einschalten.'
       : 'Dieser Browser kann keine Mitteilungen empfangen.'}</p>`
     : state === 'blockiert' ? html`<p class="small">Mitteilungen sind für das CRM blockiert. In den Einstellungen des Browsers oder des iPhones für das CRM erlauben, dann hier einschalten.</p>`
-      : html`<p class="small">${state === 'an' ? 'Auf diesem Gerät eingeschaltet.' : 'Auf diesem Gerät aus.'}
-        Mo bis Fr um 7:30 Uhr kommt eine Mitteilung, wenn Wiedervorlagen fällig sind, sonst nichts.</p>
+      : html`<p class="small">${state === 'an' ? 'Auf diesem Gerät eingeschaltet. ' : 'Auf diesem Gerät aus. '}Mo bis Fr um 7:30 Uhr kommt eine Mitteilung, wenn Wiedervorlagen fällig sind, sonst nichts.</p>
       <div class="form-actions">
         ${state === 'an' ? html`
           <button type="button" class="btn" disabled=${busy} onClick=${test}>Test senden</button>
