@@ -232,6 +232,7 @@ const ICONS = {
   users: '<circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5"/><path d="M15.5 5.3a3.5 3.5 0 010 6.4M18 14.9c2 .8 3.2 2.5 3.5 5.1"/>',
   lines: '<path d="M4 6.5h16M4 12h16M4 17.5h10"/>',
   pin: '<path d="M12 21.5s7-6.4 7-11.5a7 7 0 10-14 0c0 5.1 7 11.5 7 11.5z"/><circle cx="12" cy="10" r="2.5"/>',
+  more: '<circle cx="12" cy="5.5" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="12" cy="18.5" r=".9"/>',
 };
 function Icon({ n }) {
   return html`<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -1642,6 +1643,32 @@ function TodoRow({ card, waiting, follow, noProject }) {
 // ---------------------------------------------------------------------------
 // Board
 // ---------------------------------------------------------------------------
+// Menü einer Spalte: umbenennen, verschieben, daneben anlegen, löschen. „Erledigt“ bleibt immer und bleibt hinten.
+function ColMenu({ stage, canLeft, canRight, label, onRename, onMove, onAdd, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const off = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', off);
+    return () => document.removeEventListener('mousedown', off);
+  }, [open]);
+  const item = (text, run, cls = '') => html`<li role="none"><button type="button" role="menuitem" class=${cls}
+    onClick=${() => { setOpen(false); run(); }}>${text}</button></li>`;
+  return html`<div class="col-menu" ref=${ref} onKeyDown=${(e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false); } }}>
+    <button type="button" class=${label ? 'btn sm' : 'icon-btn'} aria-haspopup="menu" aria-expanded=${open} title="Spalte bearbeiten"
+      aria-label=${`Spalte ${stage.name} bearbeiten`} onClick=${() => setOpen(!open)}>
+      <${Icon} n="more" />${label}</button>
+    ${open && html`<ul class="col-menu-list" role="menu">
+      ${item('Umbenennen', onRename)}
+      ${canLeft && item('Nach links', () => onMove(-1))}
+      ${canRight && item('Nach rechts', () => onMove(1))}
+      ${item(stage.is_done ? 'Neue Spalte davor' : 'Neue Spalte rechts daneben', onAdd)}
+      ${stage.is_done ? html`<li role="none" class="col-menu-note">Die Spalte für Erledigtes bleibt immer.</li>` : item('Spalte löschen', onDelete, 'danger')}
+    </ul>`}
+  </div>`;
+}
+
 function Board({ projectId }) {
   const { projects, stages, cards, idx, isMobile, isGuest, actions, session } = useApp();
   const [q, setQ] = useState('');
@@ -1650,6 +1677,11 @@ function Board({ projectId }) {
   const [over, setOver] = useState(null);
   const [showAll, setShowAll] = useState({});
   const [mobileStage, setMobileStage] = useState(null);
+  const [renaming, setRenaming] = useState(null);
+  const [adding, setAdding] = useState(null);
+  const [removing, setRemoving] = useState(null);
+  const [colBusy, setColBusy] = useState(false);
+  const renameCancelled = useRef(false);
   const project = idx.project.get(Number(projectId)) || idx.project.get(Number(ls.get('crm-project'))) || projects[0];
   const cols = useMemo(() => (project ? stages.filter((s) => s.project_id === project.id).sort(bySort) : []), [stages, project]);
   const tabsRef = useRef(null);
@@ -1696,32 +1728,69 @@ function Board({ projectId }) {
 
   // Spalten anlegen, umbenennen und löschen darf, wem das Projekt gehört
   const editCols = !isGuest && idx.ownsProject(project.id);
-  // Neue Spalte vor „Erledigt“, damit Erledigtes hinten bleibt
-  async function addStage() {
-    const name = prompt('Name der neuen Spalte:');
-    if (!name?.trim()) return;
-    const done = cols.find((s) => s.is_done);
-    const sort = done ? done.sort : (cols.at(-1)?.sort ?? -1) + 1;
+  // Neue Spalte standardmäßig vor „Erledigt“, damit Erledigtes hinten bleibt
+  const startAdd = (after) => {
+    setRenaming(null);
+    const open = cols.filter((x) => !x.is_done);
+    const anchor = after && !after.is_done ? after : open.at(-1);
+    setAdding({ afterId: anchor?.id ?? null, name: '' });
+  };
+  async function commitAdd() {
+    const name = adding?.name.trim();
+    if (!name || colBusy) return;
+    const at = adding.afterId ? cols.findIndex((x) => x.id === adding.afterId) + 1 : 0;
+    const sort = cols[at]?.sort ?? (cols.at(-1)?.sort ?? -1) + 1;
+    setColBusy(true);
     try {
-      for (const s of cols.filter((x) => x.sort >= sort)) await actions.save('stages', { id: s.id, sort: s.sort + 1 });
-      const s = await actions.save('stages', { project_id: project.id, name: name.trim(), sort });
-      setMobileStage(s.id);
+      for (const x of cols.slice(at)) await actions.save('stages', { id: x.id, sort: x.sort + 1 });
+      const n = await actions.save('stages', { project_id: project.id, name, sort });
+      setMobileStage(n.id);
+      setAdding(null);
+    } catch { /* Meldung kommt über fail */ } finally { setColBusy(false); }
+  }
+  const startRename = (s) => { setAdding(null); renameCancelled.current = false; setRenaming({ id: s.id, name: s.name }); };
+  async function commitRename(s, value) {
+    setRenaming(null);
+    const name = value.trim();
+    if (!name || name === s.name) return;
+    try { await actions.save('stages', { id: s.id, name }); } catch { /* Meldung kommt über fail */ }
+  }
+  // Tauschen und dabei die Reihenfolge sauber durchnummerieren, falls alte Spalten dieselbe Nummer tragen
+  async function moveStage(s, dir) {
+    const order = [...cols];
+    const i = order.findIndex((x) => x.id === s.id);
+    const other = order[i + dir];
+    if (!other || other.is_done || s.is_done) return;
+    [order[i], order[i + dir]] = [other, s];
+    try {
+      for (let n = 0; n < order.length; n++) if (order[n].sort !== n) await actions.save('stages', { id: order[n].id, sort: n });
     } catch { /* Meldung kommt über fail */ }
   }
-  // Mit einer Spalte löscht die Datenbank auch ihre Deals, daher nur leere Spalten (auch ohne archivierte)
-  async function editStage(s) {
-    const name = prompt('Spalte umbenennen. Leer lassen, um sie zu löschen:', s.name);
-    if (name === null) return;
+  // Liegen noch Aufgaben drin (auch archivierte), fragt die App, wohin sie sollen. Die Datenbank lehnt das Löschen sonst ab
+  async function removeStage(s) {
+    if (s.is_done) return;
     try {
-      if (name.trim()) {
-        if (name.trim() !== s.name) await actions.save('stages', { id: s.id, name: name.trim() });
+      const rows = await db.list('cards', { stage_id: s.id }, 'id,archived');
+      if (rows.length) {
+        const target = cols.find((x) => x.id !== s.id && !x.is_done) || cols.find((x) => x.id !== s.id);
+        if (!target) { actions.notify('Das ist die einzige Spalte, sie lässt sich nicht löschen.'); return; }
+        setRemoving({ stage: s, ids: rows.map((r) => r.id), archived: rows.filter((r) => r.archived).length, target: target.id });
         return;
       }
-      if (s.is_done) { actions.notify('Die Spalte für Erledigtes bleibt. Umbenennen geht.'); return; }
-      const n = (await db.list('cards', { stage_id: s.id }, 'id')).length;
-      if (n) { actions.notify(`In „${s.name}“ ${n === 1 ? 'liegt noch 1 Deal' : `liegen noch ${n} Deals`}, auch archivierte zählen. Erst verschieben, dann löschen.`); return; }
       if (confirm(`Spalte „${s.name}“ löschen?`)) await actions.drop('stages', s.id);
-    } catch { /* Meldung kommt über fail */ }
+    } catch (e) { actions.fail(e); }
+  }
+  async function confirmRemove() {
+    if (colBusy) return;
+    setColBusy(true);
+    try {
+      for (const id of removing.ids) await db.update('cards', id, { stage_id: removing.target });
+      await actions.drop('stages', removing.stage.id);
+      await actions.load();
+      const n = removing.ids.length;
+      actions.notify(`Spalte gelöscht, ${n === 1 ? '1 Aufgabe' : `${n} Aufgaben`} verschoben.`);
+      setRemoving(null);
+    } catch (e) { actions.fail(e); actions.load(); } finally { setColBusy(false); }
   }
   // Beim Ziehen nahe am Rand das Board mitscrollen, damit auch Spalten außerhalb des Bildes erreichbar sind
   const edgeScroll = (e) => {
@@ -1739,6 +1808,42 @@ function Board({ projectId }) {
   const search = html`<${SearchBox} value=${q} onInput=${setQ} placeholder="Aufgaben durchsuchen" />`;
   const share = html`<${ProjectShare} project=${project} />`;
   const labelFilter = boardLabels.length > 0 && html`<${LabelFilter} labels=${boardLabels} value=${label} onChange=${setLabel} />`;
+
+  const colMenu = (s, label) => {
+    const i = cols.findIndex((x) => x.id === s.id);
+    return html`<${ColMenu} stage=${s} label=${label} canLeft=${!s.is_done && i > 0} canRight=${!s.is_done && cols[i + 1] && !cols[i + 1].is_done}
+      onRename=${() => startRename(s)} onMove=${(dir) => moveStage(s, dir)} onAdd=${() => startAdd(s)} onDelete=${() => removeStage(s)} />`;
+  };
+  // Enter speichert gleich, das Verlassen des Felds speichert dann nicht noch einmal
+  const renameInput = (s) => html`<input class="col-rename" value=${renaming.name} aria-label="Name der Spalte" ref=${(el) => el?.focus()}
+    onFocus=${(e) => e.target.select()} onInput=${(e) => setRenaming({ ...renaming, name: e.target.value })}
+    onKeyDown=${(e) => {
+      if (e.key === 'Enter') { e.preventDefault(); renameCancelled.current = true; commitRename(s, e.target.value); }
+      if (e.key === 'Escape') { e.stopPropagation(); renameCancelled.current = true; setRenaming(null); }
+    }}
+    onBlur=${(e) => { if (!renameCancelled.current) commitRename(s, e.target.value); }} />`;
+  const addForm = html`<form class="col-new-form" onSubmit=${(e) => { e.preventDefault(); commitAdd(); }}
+      onKeyDown=${(e) => { if (e.key === 'Escape') { e.stopPropagation(); setAdding(null); } }}>
+    <input class="col-rename" value=${adding?.name || ''} placeholder="Name der neuen Spalte" aria-label="Name der neuen Spalte"
+      ref=${(el) => el?.focus()} onInput=${(e) => setAdding({ ...adding, name: e.target.value })} />
+    <div class="col-new-actions">
+      <button type="submit" class="btn primary sm" disabled=${colBusy || !adding?.name.trim()}>${colBusy ? 'Legt an …' : 'Anlegen'}</button>
+      <button type="button" class="btn ghost sm" onClick=${() => setAdding(null)}>Abbrechen</button>
+    </div>
+  </form>`;
+  const removeSheet = removing && html`<${Sheet} title="Spalte löschen" onClose=${() => { if (!colBusy) setRemoving(null); }}>
+    <div class="form">
+      <p>In „${removing.stage.name}“ ${removing.ids.length === 1 ? 'liegt noch 1 Aufgabe' : `liegen noch ${removing.ids.length} Aufgaben`}${removing.archived ? `, davon ${removing.archived} archiviert` : ''}. Wohin sollen sie?</p>
+      <label class="field"><span>Verschieben nach</span>
+        <select value=${removing.target} onChange=${(e) => setRemoving({ ...removing, target: Number(e.target.value) })}>
+          ${cols.filter((x) => x.id !== removing.stage.id).map((x) => html`<option key=${x.id} value=${x.id}>${x.name}</option>`)}
+        </select></label>
+      <div class="form-actions">
+        <button type="button" class="btn primary" disabled=${colBusy} onClick=${confirmRemove}>${colBusy ? 'Verschiebt …' : 'Verschieben und Spalte löschen'}</button>
+        <button type="button" class="btn ghost" disabled=${colBusy} onClick=${() => setRemoving(null)}>Abbrechen</button>
+      </div>
+    </div>
+  <//>`;
 
   const cardList = (s, list) => {
     const limit = s.is_done && !showAll[s.id] && !q ? 15 : Infinity;
@@ -1760,34 +1865,42 @@ function Board({ projectId }) {
       ${labelFilter}
       <div class="stage-tabs">
         ${cols.map((s) => html`<button key=${s.id} class=${'stab' + (s.id === active.id ? ' on' : '')}
-          onClick=${() => (s.id === active.id && editCols ? editStage(s) : setMobileStage(s.id))}
-          title=${s.id === active.id && editCols ? 'Spalte umbenennen oder löschen' : ''}>
+          onClick=${() => (s.id === active.id && editCols ? startRename(s) : setMobileStage(s.id))}
+          title=${s.id === active.id && editCols ? 'Spalte umbenennen' : ''}>
           ${s.name}<span class="count">${byStage.get(s.id).length}</span></button>`)}
-        ${editCols && html`<button class="stab add" onClick=${addStage} title="Spalte hinzufügen" aria-label="Spalte hinzufügen">+</button>`}
+        ${editCols && html`<button class="stab add" onClick=${() => startAdd()} title="Spalte hinzufügen" aria-label="Spalte hinzufügen">+</button>`}
       </div>
+      ${editCols && html`<div class="col-tools">
+        ${adding ? addForm : renaming?.id === active.id ? renameInput(active) : colMenu(active, 'Spalte bearbeiten')}
+      </div>`}
       <div class="mobile-list">${cardList(active, byStage.get(active.id))}</div>
       <${Fab} href=${newHref(active)} label="Neue Aufgabe" />
+      ${removeSheet}
     </div>`;
   }
 
   return html`<div class="board-page">
     <div class="board-head">${projectTabs}${search}${share}</div>
     ${labelFilter}
-    <div class="board" style=${`--cols:${cols.length}`} onDragOver=${edgeScroll}>
+    <div class="board" style=${`--cols:${cols.length + (adding ? 1 : 0)}`} onDragOver=${edgeScroll}>
+      ${adding && adding.afterId === null && html`<section class="column col-new">${addForm}</section>`}
       ${cols.map((s) => html`<section key=${s.id} class=${'column' + (over === s.id ? ' over' : '')}
           onDragOver=${(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (over !== s.id) setOver(s.id); }}
           onDragLeave=${(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(null); }}
           onDrop=${(e) => { e.preventDefault(); setOver(null); move(Number(e.dataTransfer.getData('text/plain')), s.id); }}>
         <header class="col-head">
-          ${editCols ? html`<button type="button" class="col-name" onClick=${() => editStage(s)} title="Spalte umbenennen oder löschen">${s.name}<${Icon} n="edit" /></button>`
+          ${renaming?.id === s.id ? renameInput(s) : html`
+            ${editCols ? html`<button type="button" class="col-name" onClick=${() => startRename(s)} title="Spalte umbenennen">${s.name}<${Icon} n="edit" /></button>`
             : html`<span>${s.name}</span>`}<span class="count">${byStage.get(s.id).length}</span>
-          <a class="icon-btn" href=${newHref(s)} title="Aufgabe hinzufügen" aria-label="Aufgabe hinzufügen"><${Icon} n="plus" /></a>
+            <a class="icon-btn" href=${newHref(s)} title="Aufgabe hinzufügen" aria-label="Aufgabe hinzufügen"><${Icon} n="plus" /></a>
+            ${editCols && colMenu(s)}`}
         </header>
         <div class="col-body">${cardList(s, byStage.get(s.id))}</div>
-      </section>`)}
-      ${editCols && html`<button type="button" class="col-add" onClick=${addStage} title="Spalte hinzufügen" aria-label="Spalte hinzufügen">
-        <${Icon} n="plus" /></button>`}
+      </section>${adding?.afterId === s.id ? html`<section class="column col-new">${addForm}</section>` : null}`)}
+      ${editCols && !adding && html`<button type="button" class="col-add" onClick=${() => startAdd()} title="Spalte hinzufügen">
+        <${Icon} n="plus" />Spalte</button>`}
     </div>
+    ${removeSheet}
   </div>`;
 }
 

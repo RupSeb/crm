@@ -700,9 +700,34 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .col-name .ico { width: 13px; height: 13px; flex: none; opacity: 0.4; }
 .col-name:hover .ico { opacity: 1; }
 .col-add {
-  width: 44px; display: grid; justify-items: center; align-content: start; padding-top: 12px;
-  border: 2px dashed var(--border); border-radius: 14px; background: none; color: var(--muted); cursor: pointer;
+  display: flex; align-items: flex-start; gap: 6px; padding: 14px; white-space: nowrap;
+  border: 2px dashed var(--border); border-radius: 14px; background: none; color: var(--muted); font: 500 14px var(--font); cursor: pointer;
 }
+.col-add .ico { width: 16px; height: 16px; }
+.col-rename {
+  flex: 1; min-width: 0; width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--surface); color: var(--text); font: 600 14px var(--font);
+}
+.col-new { border: 2px dashed var(--border-strong); }
+.col-new-form { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
+.col-new-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.col-menu { position: relative; flex: none; }
+.col-menu-list {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; min-width: 215px; margin: 0; padding: 6px; list-style: none;
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow-lg);
+  font-weight: 400;
+}
+.col-menu-list button {
+  display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 8px; background: none;
+  color: var(--text); font: 14px var(--font); text-align: left; cursor: pointer;
+}
+.col-menu-list button:hover { background: var(--hover); }
+.col-menu-list button.danger { color: var(--danger); }
+.col-menu-note { padding: 9px 10px; font-size: 12.5px; color: var(--muted); }
+.col-tools { display: flex; align-items: center; margin: -4px 0 10px; }
+.col-tools .col-menu-list { left: 0; right: auto; }
+.col-tools .btn .ico { width: 15px; height: 15px; }
+.col-tools .col-new-form { flex: 1; padding: 0; }
 .col-add:hover { color: var(--text); border-color: var(--border-strong); }
 .column.over { border-color: var(--accent); border-style: dashed; background: var(--accent-soft); }
 .col-head { display: flex; align-items: center; gap: 8px; padding: 4px 4px 10px 6px; font-weight: 600; font-size: 14px; }
