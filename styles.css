@@ -496,7 +496,39 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
   .wk-date { width: 36px; height: 36px; font-size: 19px; }
   .wk-ev { padding: 2px 4px; font-size: 11px; }
 }
-.ev-sheet-title { margin: 0; font: 400 28px/1.15 var(--font-serif); }
+/* Termin-Ansicht wie in Google Kalender */
+.sheet:has(.gev) { max-width: 520px; }
+.gev { display: flex; flex-direction: column; gap: 16px; }
+.gev-row { display: flex; align-items: flex-start; gap: 14px; }
+.gev-head { margin-bottom: 4px; }
+.gev-ico { flex: none; display: grid; place-items: center; width: 22px; height: 22px; color: var(--muted); }
+.gev-ico .ico { width: 19px; height: 19px; }
+.gev-swatch { width: 15px; height: 15px; border-radius: 4px; background: var(--cc); margin-top: 8px; }
+.gev-main { flex: 1; min-width: 0; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.gev-side { flex: none; display: flex; align-items: center; gap: 2px; }
+.gev-title { margin: 0; font: 400 22px/1.3 var(--font); }
+.gev-when { margin: 2px 0 0; font-size: 14px; }
+.gev-sub { margin: 0; font-size: 12.5px; color: var(--muted); }
+.gev-strong { font-weight: 550; }
+.gev-link { font-weight: 550; text-decoration: none; }
+.gev-link.plain { font-weight: 400; }
+.gev-link:hover { text-decoration: underline; }
+.gev-guests { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.gev-guests li { display: flex; align-items: center; gap: 10px; }
+.gev-guest { flex: 1; min-width: 0; line-height: 1.3; }
+.gev-guest a { color: inherit; text-decoration: none; }
+.gev-guest a:hover { text-decoration: underline; }
+.gev-avatar { position: relative; flex: none; display: inline-flex; }
+.gev-badge {
+  position: absolute; right: -3px; bottom: -3px; display: grid; place-items: center;
+  width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--bg);
+  font: 700 9px/1 var(--font); color: #fff;
+}
+.gev-badge .ico { width: 9px; height: 9px; stroke-width: 3.2; }
+.gev-badge.yes { background: var(--ok); }
+.gev-badge.no { background: var(--danger); }
+.gev-badge.maybe { background: var(--muted); }
+.gev-desc { font-size: 14px; }
 .panel-sub { margin: 8px 0 4px; font: 500 10.5px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 
 /* ---------- E-Mails ---------- */

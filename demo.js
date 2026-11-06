@@ -156,7 +156,22 @@ export function demoSeed() {
     s.events.push(e);
     people.forEach((p) => s.event_persons.push({ id: id(), event_id: e.id, person_id: p.id }));
   };
-  event('Abstimmung Angebot Kundenportal', 'Vertrieb', '#9a9cff', 0, 10, 30, [anna], { meet_url: 'https://meet.google.com/abc-defg-hij' });
+  event('Abstimmung Angebot Kundenportal', 'Vertrieb', '#9a9cff', 0, 10, 30, [anna], {
+    meet_url: 'https://meet.google.com/abc-defg-hij', html_link: 'https://calendar.google.com/', location: 'Musterstraße 5, Musterstadt',
+    description: '- Preise für das zweite Paket klären\n- Termin für den Start festlegen\n- Unterlagen: https://example.com/unterlagen',
+    attendees: [anna.emails[0], 'lena.neu@example.com', 'tom.test@example.com', 'mara.muster@example.com'],
+    details: {
+      gaeste: [
+        { email: 'mara.muster@example.com', name: 'Mara Muster', status: 'declined' },
+        { email: 'lena.neu@example.com', name: 'Lena Neu', status: 'needsAction', optional: true },
+        { email: anna.emails[0], name: anna.name, status: 'accepted', organisator: true },
+        { email: 'tom.test@example.com', name: null, status: 'tentative' },
+      ],
+      telefon: { nummer: '+49 30 12345678', uri: 'tel:+49-30-12345678', pin: '135850568', region: 'DE' },
+      telefon_mehr: 'https://tel.meet/abc-defg-hij?pin=135850568', konferenz: 'Google Meet', erinnerungen: [10, 1440],
+      anhaenge: [{ titel: 'Angebot Kundenportal.pdf', url: 'https://example.com/angebot.pdf' }], serie: true,
+    },
+  });
   event('Wochenrunde Vertrieb', 'Vertrieb', '#7fa7c9', 0, 15, 50, [ben]);
   event('Zahnarzt', 'Privat', '#e07a7a', 0, 18, 45, []);
   event('Besichtigung Musterstadt', 'Objekte', '#d98b4f', 1, 12, 60, [eva], { location: 'Musterstraße 5, Musterstadt' });

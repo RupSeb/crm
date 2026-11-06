@@ -226,6 +226,12 @@ const ICONS = {
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>',
   video: '<rect x="3" y="6" width="12.5" height="12" rx="2"/><path d="M15.5 10.5l5.5-3.5v10l-5.5-3.5"/>',
   edit: '<path d="M4 20h4L18.5 9.5a2.1 2.1 0 00-3-3L5 17v3z"/><path d="M13.5 8.5l2 2"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4.5A1.5 1.5 0 013 13.5v-9A1.5 1.5 0 014.5 3h9A1.5 1.5 0 0115 4.5V5"/>',
+  trash: '<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5"/>',
+  bell: '<path d="M6 16.5V11a6 6 0 0112 0v5.5l1.5 2h-15z"/><path d="M10 21a2.2 2.2 0 004 0"/>',
+  users: '<circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5"/><path d="M15.5 5.3a3.5 3.5 0 010 6.4M18 14.9c2 .8 3.2 2.5 3.5 5.1"/>',
+  lines: '<path d="M4 6.5h16M4 12h16M4 17.5h10"/>',
+  pin: '<path d="M12 21.5s7-6.4 7-11.5a7 7 0 10-14 0c0 5.1 7 11.5 7 11.5z"/><circle cx="12" cy="10" r="2.5"/>',
 };
 function Icon({ n }) {
   return html`<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -2837,8 +2843,48 @@ function TodayEvents() {
   <//>`;
 }
 
+// Termin-Ansicht wie in Google Kalender: Zeilen mit Symbol links, Gäste mit ihrer Antwort. Antworten, Telefon-Einwahl,
+// Erinnerungen und Anhänge stehen in events.details (25_termin_details.sql) und kommen erst beim Öffnen.
+const webLink = (u) => (/^https?:\/\//i.test(u || '') ? u : null);
+const ANTWORTEN = { accepted: 'ja', declined: 'nein', tentative: 'vielleicht', needsAction: 'offen' };
+const ANTWORT_RANG = { accepted: 0, tentative: 1, needsAction: 2, declined: 3 };
+const mehrzahl = (n, eins, viele) => `${n} ${n === 1 ? eins : viele}`;
+function vorherText(m) {
+  if (m === 0) return 'Beim Start';
+  if (m % 10080 === 0) return `${mehrzahl(m / 10080, 'Woche', 'Wochen')} vorher`;
+  if (m % 1440 === 0) return `${mehrzahl(m / 1440, 'Tag', 'Tage')} vorher`;
+  if (m % 60 === 0) return `${mehrzahl(m / 60, 'Stunde', 'Stunden')} vorher`;
+  return `${mehrzahl(m, 'Minute', 'Minuten')} vorher`;
+}
+function konferenzName(url, name) {
+  if (/meet\.google\./i.test(url)) return 'Google Meet';
+  if (/zoom\.us/i.test(url)) return 'Zoom';
+  if (/teams\.microsoft\./i.test(url)) return 'Microsoft Teams';
+  return name || 'Videokonferenz';
+}
+// „Freitag, 6. November · 11:40 bis 12:10“. Bei ganztägigen Terminen nennt Google als Ende den ersten Tag danach
+function eventWhen(ev) {
+  const tag = (d) => d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long',
+    ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+  if (ev.all_day) {
+    const von = new Date(`${ev.start_at.slice(0, 10)}T12:00`);
+    const bis = ev.end_at ? new Date(`${ev.end_at.slice(0, 10)}T12:00`) : null;
+    if (bis) bis.setDate(bis.getDate() - 1);
+    return bis && bis > von ? `${tag(von)} bis ${tag(bis)}` : tag(von);
+  }
+  const von = new Date(ev.start_at);
+  if (!ev.end_at) return `${tag(von)} · ${hm(ev.start_at)}`;
+  const bis = new Date(ev.end_at);
+  return localDay(von) === localDay(bis) ? `${tag(von)} · ${hm(ev.start_at)} bis ${hm(ev.end_at)}`
+    : `${tag(von)}, ${hm(ev.start_at)} bis ${tag(bis)}, ${hm(ev.end_at)}`;
+}
+function GevRow({ icon, side, children }) {
+  return html`<div class="gev-row"><span class="gev-ico"><${Icon} n=${icon} /></span>
+    <div class="gev-main">${children}</div>${side && html`<div class="gev-side">${side}</div>`}</div>`;
+}
+
 function EventSheet({ event: ev }) {
-  const { idx, persons, meetings, actions } = useApp();
+  const { idx, persons, meetings, actions, me } = useApp();
   const konten = useGoogleKonten();
   const [full, setFull] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -2853,10 +2899,15 @@ function EventSheet({ event: ev }) {
   const linked = new Set(idx.guestsOf.get(ev.id) || []);
   const meeting = meetings.find((m) => Math.abs(ts(m.held_at) - ts(ev.start_at)) <= 20 * 60e3);
   const cals = idx.calendarsOf.get(ev.id) || [ev.calendar_name];
-  const desc = full?.description ? sanitize(/<[a-z]/i.test(full.description) ? full.description : escapeHtml(full.description).replace(/\n/g, '<br>')) : '';
+  // Reiner Text: Adressen werden wie in Google anklickbar
+  const desc = full?.description ? sanitize(/<[a-z]/i.test(full.description) ? full.description
+    : escapeHtml(full.description).replace(/https?:\/\/(?:(?!&gt;|&lt;|&quot;)[^\s<])+/g, (u) => {
+      const link = u.replace(/[.,:!?)]+$/, '');
+      return `<a href="${link}">${link}</a>${u.slice(link.length)}`;
+    }).replace(/\n/g, '<br>')) : '';
 
-  async function addContact(addr) {
-    const name = addr.split('@')[0].split(/[._-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+  async function addContact(addr, shown) {
+    const name = shown || addr.split('@')[0].split(/[._-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
     try {
       const p = await actions.save('persons', { name, emails: [addr], labels: ['Aus Kalender'] });
       await actions.save('event_persons', { event_id: ev.id, person_id: p.id });
@@ -2878,29 +2929,91 @@ function EventSheet({ event: ev }) {
     } catch (e) { actions.fail(e); setBusy(false); }
   }
 
-  return html`<${Sheet} title="Termin" onClose=${close}>
-    <div class="form">
-      <h2 class="ev-sheet-title">${ev.title}</h2>
-      <p class="meta">${dayLabel(eventDay(ev))} · ${timeRange(ev)} · ${cals.join(', ')}</p>
-      ${ev.location && html`<p class="small">Ort: ${ev.location}</p>`}
-      <div class="contact-actions">
-        ${ev.meet_url && html`<a class="btn primary" href=${ev.meet_url} target="_blank" rel="noopener"><${Icon} n="video" />Beitreten</a>`}
-        ${ev.html_link && html`<a class="btn" href=${ev.html_link} target="_blank" rel="noopener"><${Icon} n="calendar" />Im Google Kalender</a>`}
-        ${meeting && html`<a class="btn" href=${`#/meeting/${meeting.id}`}><${Icon} n="mic" />Meeting-Zusammenfassung</a>`}
-        ${kannAbsagen && html`<button type="button" class="btn ghost danger" disabled=${busy} onClick=${absagen}>${busy ? 'Sagt ab …' : 'Absagen'}</button>`}
+  const d = full?.details || {};
+  const copy = (text, msg) => navigator.clipboard.writeText(text).then(() => actions.notify(msg)).catch(() => actions.notify(text));
+  const meet = webLink(ev.meet_url);
+  const tel = d.telefon;
+  const telNr = tel ? String(tel.uri || tel.nummer || '').replace(/^tel:/, '').replace(/[^\d+]/g, '') : '';
+  const pin = tel?.pin ? String(tel.pin) : '';
+  const ort = ev.location && ev.location !== ev.meet_url ? ev.location : '';
+
+  // Gäste wie in Google: Organisator zuerst, dann nach Antwort. Bis die Details da sind, reicht die Liste der Adressen
+  const eigene = new Set([me, ...konten.map((k) => k.address)].map((a) => String(a || '').toLowerCase()));
+  const guests = [...(d.gaeste || (ev.attendees || []).map((email) => ({ email })))].sort((a, b) => (b.organisator ? 1 : 0) - (a.organisator ? 1 : 0)
+    || (ANTWORT_RANG[a.status] ?? 2) - (ANTWORT_RANG[b.status] ?? 2));
+  const antworten = Object.keys(ANTWORTEN).map((s) => [guests.filter((g) => g.status === s).length, ANTWORTEN[s]]).filter(([n]) => n > 0)
+    .map(([n, wort]) => `${n} ${wort}`).join(', ');
+  const fremde = guests.map((g) => g.email).filter((a) => !eigene.has(a));
+  const mailHref = konten.some((k) => k.darf_senden)
+    ? `#/mail/neu?an=${encodeURIComponent(fremde.join(', '))}&betreff=${encodeURIComponent(ev.title)}`
+    : `mailto:${fremde.join(',')}?subject=${encodeURIComponent(ev.title)}`;
+
+  return html`<${Sheet} title="Termin" onClose=${close} action=${html`
+      ${ev.html_link && html`<a class="icon-btn" href=${ev.html_link} target="_blank" rel="noopener" title="Im Google Kalender bearbeiten" aria-label="Im Google Kalender bearbeiten"><${Icon} n="edit" /></a>`}
+      ${kannAbsagen && html`<button type="button" class="icon-btn" disabled=${busy} onClick=${absagen} title=${busy ? 'Sagt ab …' : 'Termin absagen'} aria-label="Termin absagen"><${Icon} n="trash" /></button>`}`}>
+    <div class="gev">
+      <div class="gev-row gev-head">
+        <span class="gev-ico"><span class="gev-swatch" style=${`--cc:${ev.calendar_color || '#a9b4ae'}`}></span></span>
+        <div class="gev-main">
+          <h2 class="gev-title">${ev.title}</h2>
+          <p class="gev-when">${eventWhen(ev)}</p>
+          ${d.serie && html`<p class="gev-sub">Wiederkehrender Termin</p>`}
+        </div>
       </div>
-      ${(ev.attendees || []).length > 0 && html`<div class="field"><span>Teilnehmer</span>
-        <div class="participants">
-          ${ev.attendees.map((addr) => {
-    const p = byMail.get(addr) || [...linked].map((id) => idx.person.get(id)).find((x) => x && (x.emails || []).includes(addr));
-    return p
-      ? html`<span class="chip person" key=${addr}><a href=${`#/kontakt/${p.id}`}>${p.name}</a></span>`
-      : html`<span class="chip dashed" key=${addr}>${addr}<button type="button" class="chip-add" onClick=${() => addContact(addr)}>+ Kontakt</button></span>`;
+
+      ${meet && html`<${GevRow} icon="video" side=${html`<button type="button" class="icon-btn sm" title="Link kopieren" aria-label="Link kopieren"
+          onClick=${() => copy(meet, 'Link kopiert.')}><${Icon} n="copy" /></button>`}>
+        <a class="gev-link" href=${meet} target="_blank" rel="noopener">Mit ${konferenzName(meet, d.konferenz)} teilnehmen</a>
+        <div class="gev-sub">${meet.replace(/^https?:\/\//i, '').replace(/\?.*$/, '')}</div>
+      <//>`}
+      ${telNr && html`<${GevRow} icon="phone">
+        <a class="gev-link" href=${`tel:${telNr}${pin ? `,,${pin.replace(/\D/g, '')}%23` : ''}`}>Per Telefon teilnehmen</a>
+        <div class="gev-sub">${tel.region ? `(${tel.region}) ` : ''}${tel.nummer}${pin ? ` PIN: ${pin.replace(/(\d{3})(?=\d)/g, '$1 ')}#` : ''}</div>
+      <//>`}
+      ${webLink(d.telefon_mehr) && html`<${GevRow} icon="link"><a class="gev-link" href=${d.telefon_mehr} target="_blank" rel="noopener">Weitere Telefonnummern</a><//>`}
+      ${ort && html`<${GevRow} icon="pin">
+        <a class="gev-link plain" href=${webLink(ort) || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(ort)}`} target="_blank" rel="noopener">${ort}</a>
+      <//>`}
+
+      ${guests.length > 0 && html`<${GevRow} icon="users" side=${fremde.length > 0 && html`
+          <button type="button" class="icon-btn sm" title="Adressen kopieren" aria-label="Adressen kopieren" onClick=${() => copy(fremde.join(', '), 'Adressen kopiert.')}><${Icon} n="copy" /></button>
+          <a class="icon-btn sm" href=${mailHref} title="Mail an alle Gäste" aria-label="Mail an alle Gäste"><${Icon} n="mail" /></a>`}>
+        <div class="gev-strong">${mehrzahl(guests.length, 'Gast', 'Gäste')}</div>
+        ${antworten && html`<div class="gev-sub">${antworten}</div>`}
+        <ul class="gev-guests">
+          ${guests.map((g) => {
+    const p = byMail.get(g.email) || [...linked].map((id) => idx.person.get(id)).find((x) => x && (x.emails || []).includes(g.email));
+    const name = p?.name || g.name || g.email;
+    const zusatz = [g.organisator && 'Organisator', g.optional && 'Optional'].filter(Boolean).join(', ');
+    return html`<li key=${g.email} title=${g.email}>
+      <span class="gev-avatar"><${Avatar} name=${name} />
+        ${g.status === 'accepted' && html`<span class="gev-badge yes" title="Zugesagt"><${Icon} n="check" /></span>`}
+        ${g.status === 'declined' && html`<span class="gev-badge no" title="Abgesagt"><${Icon} n="close" /></span>`}
+        ${g.status === 'tentative' && html`<span class="gev-badge maybe" title="Vielleicht">?</span>`}
+      </span>
+      <div class="gev-guest">
+        ${p ? html`<a href=${`#/kontakt/${p.id}`}>${name}</a>` : html`<span>${name}</span>`}
+        ${zusatz && html`<div class="gev-sub">${zusatz}</div>`}
+      </div>
+      ${!p && !eigene.has(g.email) && html`<button type="button" class="chip-add" onClick=${() => addContact(g.email, g.name)}>+ Kontakt</button>`}
+    </li>`;
   })}
-        </div></div>`}
+        </ul>
+      <//>`}
+
+      ${full === null ? html`<${GevRow} icon="lines"><span class="gev-sub">Lädt …</span><//>`
+    : desc && html`<${GevRow} icon="lines"><div class="note-body gev-desc" dangerouslySetInnerHTML=${{ __html: desc }} onClick=${(e) => {
+      // Links aus der Beschreibung im neuen Fenster, sonst verlässt man das CRM
+      const a = e.target.closest('a[href]');
+      if (a) { e.preventDefault(); window.open(a.href, '_blank', 'noopener'); }
+    }}></div><//>`}
+      ${(d.anhaenge || []).length > 0 && html`<${GevRow} icon="clip">
+        ${d.anhaenge.map((a) => (webLink(a.url) ? html`<div key=${a.url}><a class="gev-link plain" href=${a.url} target="_blank" rel="noopener">${a.titel}</a></div>` : null))}
+      <//>`}
+      ${(d.erinnerungen || []).length > 0 && html`<${GevRow} icon="bell">${d.erinnerungen.map(vorherText).join(', ')}<//>`}
+      <${GevRow} icon="calendar">${cals.join(', ')}<//>
+      ${meeting && html`<${GevRow} icon="mic"><a class="gev-link plain" href=${`#/meeting/${meeting.id}`}>Meeting-Zusammenfassung</a><//>`}
     </div>
-    ${full === null ? html`<p class="muted small">Lädt …</p>` : desc && html`<section class="notes"><h3>Beschreibung</h3>
-      <div class="note-body" dangerouslySetInnerHTML=${{ __html: desc }}></div></section>`}
   <//>`;
 }
 
