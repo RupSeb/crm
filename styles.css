@@ -27,6 +27,7 @@
   --accent-soft: rgba(191, 153, 105, 0.16);
   --danger: #e8907f;
   --hover: rgba(242, 235, 222, 0.06);
+  --mail-open: color-mix(in srgb, #ffffff 9%, var(--surface));
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.5);
   --font: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -75,6 +76,7 @@
   --bg: #faf9f6; --surface: #ffffff; --surface-2: #f4f2ed; --col-bg: #efece5;
   --border: rgba(27, 37, 33, 0.10); --border-strong: rgba(27, 37, 33, 0.20);
   --text: #1b2521; --muted: #5f6b65; --hover: rgba(27, 37, 33, 0.05);
+  --mail-open: color-mix(in srgb, var(--accent) 7%, #ffffff);
   --gold: #354840; --gold-l: #8a6a3c; --accent-ink: #ffffff; --accent-soft: rgba(53, 72, 64, 0.10);
   --ok: #3e7a55; --danger: #b5483c;
   --shadow: 0 1px 2px rgba(27, 37, 33, 0.06), 0 1px 6px rgba(27, 37, 33, 0.04);
@@ -567,6 +569,22 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
   .mail-row:hover .mail-date:has(+ .mail-actions > *) { display: none; }
 }
 .mail.open .mail-line { white-space: normal; }
+/* Geöffnete Mail als eigene, hellere Fläche. Nebentext etwas kräftiger, damit er auf der helleren Fläche lesbar bleibt */
+.mail.open {
+  --muted: color-mix(in srgb, var(--text) 72%, var(--mail-open));
+  margin: 6px -6px; border-top-color: transparent; border-radius: 12px; background: var(--mail-open);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.mail.open + .mail { border-top-color: transparent; }
+.mail.open .mail-row { margin: 0; }
+.mail.open .mail-row:hover { background: transparent; }
+.mail.open .mail-body { padding: 4px 14px 14px 44px; }
+.mail.open .mail-text { font-size: 15px; }
+.mail.open .mail-text.quote { font-size: 13.5px; }
+.mail.open .mail-file { background: var(--surface); }
+@media (max-width: 760px) {
+  .mail.open .mail-body { padding-left: 14px; }
+}
 .mail-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .mail-buttons .btn .ico { width: 14px; height: 14px; }
 /* Schmal (Handy, Notizen-Spalte): zwei Zeilen wie die Gmail-App, Absender und Datum oben, darunter Betreff und Text */
