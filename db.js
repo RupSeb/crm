@@ -156,6 +156,10 @@ const remote = {
   async termin(t) {
     return googleCall('termin', t);
   },
+  // Link auf einen Anhang, 5 Minuten gültig
+  async mailAnhang(emailId, name, nr) {
+    return googleCall('anhang-link', { email_id: emailId, name, nr });
+  },
   async terminAbsagen(t) {
     return googleCall('termin-absagen', t);
   },
@@ -376,6 +380,9 @@ const demo = {
     });
     persist();
     return { ok: true };
+  },
+  async mailAnhang(emailId, name) {
+    return { url: URL.createObjectURL(new Blob([`Beispiel für den Anhang ${name} im Demo-Modus.`], { type: 'text/plain' })) };
   },
   async terminAbsagen(t) {
     const s = state();

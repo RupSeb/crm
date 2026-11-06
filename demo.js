@@ -137,7 +137,7 @@ export function demoSeed() {
     s.email_persons.push({ id: id(), email_id: m.id, person_id: p.id });
   };
   mail(anna, 'in', 'Nutzerzahlen Oktober', 0, 'Hallo Alex,\n\nanbei wie besprochen die Nutzerzahlen der letzten Monate.\n\nViele Grüße\nAnna Beispiel',
-    { attachments: ['Nutzerzahlen_2026.xlsx'] });
+    { attachments: ['Nutzerzahlen_2026.xlsx', 'Angebot Kundenportal.pdf'] });
   mail(anna, 'out', 'Angebot Kundenportal', 1, 'Hallo Frau Beispiel,\n\ndas Angebot kommt bis Freitag.\n\nBeste Grüße\nAlex Demo\n\nAm 29.10.2026 um 10:12 schrieb Anna Beispiel:\n> Wann können wir mit dem Angebot rechnen?');
   // Termine heute und in den nächsten Tagen, Uhrzeit in Ortszeit
   const at = (days, hour, min = 0) => {

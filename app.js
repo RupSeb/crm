@@ -3552,6 +3552,7 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState(null);
   const [showQuote, setShowQuote] = useState(false);
+  const [fileBusy, setFileBusy] = useState(null);
   async function toggle() {
     setOpen(!open);
     if (!open && body === null) {
@@ -3573,6 +3574,26 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
   const person = people[0];
   const taskHref = person ? `#/karte/neu?kontakt=${person.id}&titel=${encodeURIComponent(m.subject || '')}` : null;
   const files = m.attachments || [];
+  // Anhang aus Gmail holen (google-abgleich, /anhang-link). PDF, Bilder und Text zeigt der Browser im neuen Fenster,
+  // das Fenster muss sofort aufgehen, sonst blockt es das iPhone nach dem Warten auf den Link. Der Rest wird geladen.
+  async function openFile(name, i) {
+    const zeigen = /\.(pdf|png|jpe?g|gif|webp|txt)$/i.test(name);
+    const w = zeigen ? window.open('', '_blank') : null;
+    setFileBusy(i);
+    try {
+      const nr = files.slice(0, i).filter((x) => x === name).length;
+      const { url } = await db.mailAnhang(m.id, name, nr);
+      if (w) { w.location.href = url; } else if (zeigen) { location.href = url; } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.rel = 'noopener';
+        document.body.append(a);
+        a.click();
+        a.remove();
+      }
+    } catch (e) { if (w) w.close(); actions.fail(e); } finally { setFileBusy(null); }
+  }
   return html`<article class=${'mail' + (open ? ' open' : '')}>
     <div class="mail-row" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}
       onKeyDown=${(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } }}>
@@ -3602,7 +3623,10 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
         <div class="mail-text">${main || '(kein Text)'}</div>
         ${quote && html`<button class="btn link sm" onClick=${() => setShowQuote(!showQuote)}>${showQuote ? 'Verlauf ausblenden' : 'Zitierten Verlauf anzeigen'}</button>`}
         ${quote && showQuote && html`<div class="mail-text quote">${quote}</div>`}`}
-      ${files.length > 0 && html`<p class="meta"><${Icon} n="clip" /> Anhänge: ${files.join(', ')}</p>`}
+      ${files.length > 0 && html`<div class="mail-attach">
+        ${files.map((f, i) => html`<button type="button" key=${f + i} class="mail-file" disabled=${fileBusy === i} title=${`${f} öffnen`} onClick=${() => openFile(f, i)}>
+          <${Icon} n="file" /><span>${fileBusy === i ? 'Öffnet …' : f}</span></button>`)}
+      </div>`}
       <div class="mail-buttons">
         ${kannSenden && html`<a class="btn sm" href=${replyHref}><${Icon} n="reply" />Antworten</a>`}
         ${kannSenden && weitere > (out ? 1 : 0) && html`<a class="btn sm" href=${replyHref + '&alle=1'}><${Icon} n="reply" />Allen antworten</a>`}

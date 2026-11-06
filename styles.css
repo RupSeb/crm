@@ -979,6 +979,15 @@ details.more[open] summary { margin-bottom: 12px; }
 /* Mail schreiben */
 .mail-write { align-self: flex-start; }
 .field .mail-write { margin-top: 2px; }
+.mail-attach { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.mail-file {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 32px; padding: 5px 10px;
+  border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-2); color: var(--text);
+  font: 13px var(--font); text-align: left; overflow-wrap: anywhere; cursor: pointer;
+}
+.mail-file:hover { border-color: var(--gold); }
+.mail-file:disabled { color: var(--muted); cursor: default; }
+.mail-file .ico { width: 14px; height: 14px; flex: none; }
 .mail-files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .mail-files .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; overflow-wrap: anywhere; }
 .mail-files .ico { width: 13px; height: 13px; flex: none; }
