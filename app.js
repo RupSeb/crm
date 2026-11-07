@@ -529,7 +529,7 @@ function Main({ session }) {
   const load = useCallback(async () => {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
-        card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude] = await Promise.all([
+        card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude, antworten, postfach_neu] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -543,6 +543,8 @@ function Main({ session }) {
         db.list('card_seen').catch(() => []),
         db.rpc('card_file_counts').catch(() => []),
         db.rpc('claude_status').catch(() => null),
+        db.rpc('antworten_offen').catch(() => []),
+        db.rpc('postfach_neu').catch(() => 0),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
@@ -552,7 +554,8 @@ function Main({ session }) {
       const myProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
       const cards = role === 'gast' ? allCards.filter((c) => mine.has(c.id) || myProjects.has(c.project_id)) : allCards;
       setData({ projects, stages, organizations, persons, cards, meetings, meeting_persons, events, event_persons,
-        card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [], claude });
+        card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [], claude,
+        antworten: antworten || [], postfach_neu: postfach_neu || 0 });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -566,6 +569,17 @@ function Main({ session }) {
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [load]);
+
+  // Zahlen in der Navigation und „Antwort da“ (27_nachfass.sql). Neue Mails kommen alle 5 Minuten,
+  // deshalb holt die offene App diese beiden kleinen Abfragen im selben Takt nach, ohne alles neu zu laden.
+  const refreshCounts = useCallback(async () => {
+    const [antworten, neu] = await Promise.all([db.rpc('antworten_offen').catch(() => null), db.rpc('postfach_neu').catch(() => null)]);
+    setData((d) => d && { ...d, ...(antworten ? { antworten } : {}), ...(neu !== null ? { postfach_neu: neu } : {}) });
+  }, []);
+  useEffect(() => {
+    const t = setInterval(() => { if (document.visibilityState === 'visible') refreshCounts(); }, 5 * 60e3);
+    return () => clearInterval(t);
+  }, [refreshCounts]);
 
   const actions = useMemo(() => {
     const me = (session?.user?.email || '').toLowerCase();
@@ -584,6 +598,9 @@ function Main({ session }) {
     return {
       load,
       fail,
+      refreshCounts,
+      // Postfach geöffnet: Zahl in der Navigation sofort auf null
+      setPostfachNeu(n) { setData((d) => d && { ...d, postfach_neu: n }); },
       // Kurze Meldung unten, optional mit „Rückgängig“
       notify(text, undo) { setToast({ text, undo }); },
       async save(table, row) {
@@ -655,7 +672,7 @@ function Main({ session }) {
         } catch (e) { fail(e); throw e; }
       },
     };
-  }, [load, fail]);
+  }, [load, fail, refreshCounts]);
 
   const idx = useMemo(() => {
     if (!data) return null;
@@ -727,7 +744,14 @@ function Main({ session }) {
     const visibleFor = (c, email) => ownerOf(c.project_id) === email
       || (sharesOf.get(c.id) || []).some((x) => x.email.toLowerCase() === email)
       || (projectSharesOf.get(c.project_id) || []).some((x) => x.email.toLowerCase() === email);
+    // „Antwort da“ (27_nachfass.sql): der Kontakt hat geschrieben, seit die Aufgabe zuletzt geändert wurde.
+    // Wer die Aufgabe gerade verschoben oder neu vorgelegt hat, sieht den Hinweis sofort nicht mehr.
+    const cardById = byId(data.cards);
+    const answerOf = new Map((data.antworten || [])
+      .filter((a) => cardById.has(a.card_id) && ts(a.sent_at) > ts(cardById.get(a.card_id).updated_at))
+      .map((a) => [a.card_id, a]));
     return {
+      answerOf,
       sharesOf,
       projectSharesOf,
       historyOf,
@@ -743,7 +767,7 @@ function Main({ session }) {
       stage: byId(data.stages),
       org: byId(data.organizations),
       person: byId(data.persons),
-      card: byId(data.cards),
+      card: cardById,
       meeting: byId(data.meetings),
       event: byId(events),
       events,
@@ -754,6 +778,20 @@ function Main({ session }) {
       peopleOf,
     };
   }, [data]);
+
+  // Zahl an „Übersicht“ und am App-Symbol: Antworten auf wartende Aufgaben und fällige Wiedervorlagen
+  const attention = useMemo(() => {
+    if (!data || !idx || data.role === 'gast') return { n: 0, title: '' };
+    const f = followUpOf(myOpen(data.cards, (session?.user?.email || '').toLowerCase()), idx);
+    const title = [f.answered.length && `${f.answered.length} ${f.answered.length === 1 ? 'Antwort' : 'Antworten'} da`,
+      f.due.length && `${f.due.length} fällig`].filter(Boolean).join(', ');
+    return { n: f.answered.length + f.due.length, title };
+  }, [data, idx]);
+  useEffect(() => {
+    if (!data) return;
+    if (attention.n) navigator.setAppBadge?.(attention.n).catch(() => {});
+    else navigator.clearAppBadge?.().catch(() => {});
+  }, [attention.n, !data]);
 
   async function logout() {
     if (DEMO && !confirm('Demo-Daten auf den Anfangszustand zurücksetzen?')) return;
@@ -831,13 +869,22 @@ function Main({ session }) {
   const page = isGuest ? html`<${GuestHome} />` : renderPage(bg);
   const tab = isGuest ? 'geteilt' : TAB_OF[bg[0]] || 'heute';
   const tabs = isGuest ? [['geteilt', 'Geteilt', 'board', '#/geteilt']] : TABS;
+  // Kleine Zahlen wie in Pipedrive: was auf der Übersicht ansteht, neue Mails seit dem letzten Blick ins Postfach
+  const navCount = isGuest ? {} : {
+    heute: [attention.n, attention.title, 'warn'],
+    postfach: [data.postfach_neu || 0, `${data.postfach_neu} neu seit deinem letzten Blick ins Postfach`, ''],
+  };
+  const countMark = (key) => {
+    const [n, title, cls] = navCount[key] || [];
+    return n > 0 && html`<span class=${'nav-count ' + cls} title=${title} aria-label=${title}>${n > 99 ? '99+' : n}</span>`;
+  };
 
   return html`<${Ctx.Provider} value=${ctx}>
     <div class=${'shell' + (isGuest ? ' guest' : '')}>
       <header class="topbar">
         <a class="brand" href=${isGuest ? '#/geteilt' : '#/heute'}><${BrandMark} />${APP_NAME}</a>
         <nav class="topnav">
-          ${tabs.map(([key, label, , href]) => html`<a key=${key} href=${href} class=${tab === key ? 'on' : ''}>${label}</a>`)}
+          ${tabs.map(([key, label, , href]) => html`<a key=${key} href=${href} class=${tab === key ? 'on' : ''}>${label}${countMark(key)}</a>`)}
         </nav>
         <div class="topbar-end">
           ${DEMO && html`<span class="badge demo">Demo</span>`}
@@ -846,7 +893,7 @@ function Main({ session }) {
       </header>
       <main class="main">${page}</main>
       <nav class="tabbar">
-        ${tabs.map(([key, label, icon, href]) => html`<a key=${key} href=${href} class=${tab === key ? 'on' : ''}><${Icon} n=${icon} /><span>${label}</span></a>`)}
+        ${tabs.map(([key, label, icon, href]) => html`<a key=${key} href=${href} class=${tab === key ? 'on' : ''}><span class="tab-ico"><${Icon} n=${icon} />${countMark(key)}</span><span>${label}</span></a>`)}
       </nav>
       ${overlay}
       ${toast && html`<div class="toast" role="alert" onClick=${() => setToast(null)}>
@@ -1452,25 +1499,37 @@ function Tile({ id, title, cls = '', children }) {
 // „Wieder in …“ setzt das Datum ab heute neu. Die Zahl des Fälligen steht auch am App-Symbol.
 const FOLLOW_STEPS = [[3, '3 Tagen'], [7, '1 Woche'], [14, '2 Wochen']];
 
-function FollowUpTile({ open }) {
-  const { idx } = useApp();
-  const [all, setAll] = useState(false);
+// Meine offenen Karten: nicht archiviert und mir oder niemandem zugewiesen
+const myOpen = (cards, me) => cards.filter((c) => !c.archived && (assigneesOf(c).length === 0 || assigneesOf(c).includes(me)));
+
+// Gruppen der Kachel „Wiedervorlagen“. „Antwort da“ steht vorn und taucht in den anderen Gruppen nicht noch einmal auf.
+function followUpOf(open, idx) {
   const today = todayStr();
   const soon = addDays(today, 7);
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
   const active = open.filter((c) => kind(c) !== 'done');
   const byDue = (a, b) => a.due_date.localeCompare(b.due_date) || byUpdatedDesc(a, b);
-  const due = active.filter((c) => c.due_date && c.due_date <= today).sort(byDue);
-  const next = active.filter((c) => c.due_date && c.due_date > today && c.due_date <= soon).sort(byDue);
-  const waiting = active.filter((c) => kind(c) === 'waiting' && !(c.due_date && c.due_date <= soon))
+  const answered = active.filter((c) => idx.answerOf.has(c.id))
+    .sort((a, b) => ts(idx.answerOf.get(b.id).sent_at) - ts(idx.answerOf.get(a.id).sent_at));
+  const rest = active.filter((c) => !idx.answerOf.has(c.id));
+  const due = rest.filter((c) => c.due_date && c.due_date <= today).sort(byDue);
+  const next = rest.filter((c) => c.due_date && c.due_date > today && c.due_date <= soon).sort(byDue);
+  const waiting = rest.filter((c) => kind(c) === 'waiting' && !(c.due_date && c.due_date <= soon))
     .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9') || ts(a.updated_at) - ts(b.updated_at));
-  useEffect(() => {
-    if (due.length) navigator.setAppBadge?.(due.length).catch(() => {});
-    else navigator.clearAppBadge?.().catch(() => {});
-  }, [due.length]);
+  return { answered, due, next, waiting };
+}
+
+function FollowUpTile({ open }) {
+  const { idx } = useApp();
+  const [all, setAll] = useState(false);
+  const { answered, due, next, waiting } = followUpOf(open, idx);
   const shownWaiting = all ? waiting : waiting.slice(0, 6);
-  return html`<${Tile} id="wiedervorlagen" cls=${due.length ? 'has-due' : ''}
-      title=${html`Wiedervorlagen ${due.length > 0 && html`<span class="count">${due.length} fällig</span>`}`}>
+  const head = [answered.length > 0 && html`<span class="count answer-count">${answered.length} ${answered.length === 1 ? 'Antwort' : 'Antworten'}</span>`,
+    due.length > 0 && html`<span class="count">${due.length} fällig</span>`];
+  return html`<${Tile} id="wiedervorlagen" cls=${due.length || answered.length ? 'has-due' : ''}
+      title=${html`Wiedervorlagen ${head}`}>
+    ${answered.length > 0 && html`<div class="todo-group"><h3 class="group-answer">Antwort da <span class="count">${answered.length}</span></h3>
+      ${answered.map((c) => html`<${TodoRow} key=${'a' + c.id} card=${c} follow answer=${idx.answerOf.get(c.id)} />`)}</div>`}
     ${due.length > 0 && html`<div class="todo-group"><h3 class="group-late">Fällig <span class="count">${due.length}</span></h3>
       ${due.map((c) => html`<${TodoRow} key=${'f' + c.id} card=${c} follow />`)}</div>`}
     ${next.length > 0 && html`<div class="todo-group"><h3 class="group-normal">Nächste 7 Tage <span class="count">${next.length}</span></h3>
@@ -1478,7 +1537,7 @@ function FollowUpTile({ open }) {
     ${waiting.length > 0 && html`<div class="todo-group"><h3 class="group-normal">Wartet auf Antwort <span class="count">${waiting.length}</span></h3>
       ${shownWaiting.map((c) => html`<${TodoRow} key=${'w' + c.id} card=${c} waiting />`)}
       ${waiting.length > 6 && html`<button class="btn link sm" onClick=${() => setAll(!all)}>${all ? 'Weniger anzeigen' : `Alle ${waiting.length} anzeigen`}</button>`}</div>`}
-    ${!due.length && !next.length && !waiting.length && html`<p class="muted small">Nichts zum Nachhaken. Schieb eine Aufgabe nach
+    ${!answered.length && !due.length && !next.length && !waiting.length && html`<p class="muted small">Nichts zum Nachhaken. Schieb eine Aufgabe nach
       „Feedback von Anderen“ oder setz im Deal „Wieder vorlegen“, dann kommt sie hier rechtzeitig wieder hoch.</p>`}
   <//>`;
 }
@@ -1506,7 +1565,7 @@ function Overview() {
   const [showAll, setShowAll] = useState({});
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
   // Was nur anderen zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
-  const open = cards.filter((c) => !c.archived && (assigneesOf(c).length === 0 || assigneesOf(c).includes(me)));
+  const open = myOpen(cards, me);
   const todo = open.filter((c) => kind(c) === 'todo' || kind(c) === 'doing');
 
   // Eine Gruppe je Projekt, in der Reihenfolge der Projekte (Spalte sort). Darin nach Dringlichkeit in der
@@ -1600,13 +1659,15 @@ function QuickAdd() {
   </form>`;
 }
 
-function TodoRow({ card, waiting, follow, noProject }) {
+function TodoRow({ card, waiting, follow, noProject, answer }) {
   const { idx, stages, actions } = useApp();
   const [done, setDone] = useState(false);
   const pr = idx.project.get(card.project_id);
   const person = idx.person.get(card.person_id);
-  const meta = [noProject ? '' : pr?.name, follow ? idx.stage.get(card.stage_id)?.name : '', person?.name,
-    waiting ? `seit ${relDate(card.updated_at).replace(/^vor /, '')}` : ''].filter(Boolean).join(' · ');
+  const meta = answer
+    ? [noProject ? '' : pr?.name, `${answer.from_name || answer.from_email} hat ${relDate(answer.sent_at).replace(/^\d/, 'am $&')} geschrieben`].filter(Boolean).join(' · ')
+    : [noProject ? '' : pr?.name, follow ? idx.stage.get(card.stage_id)?.name : '', person?.name,
+      waiting ? `seit ${relDate(card.updated_at).replace(/^vor /, '')}` : ''].filter(Boolean).join(' · ');
   // Wiedervorlage ab heute neu setzen, z. B. nach dem Nachhaken
   async function later(e, days) {
     e.stopPropagation();
@@ -1631,7 +1692,8 @@ function TodoRow({ card, waiting, follow, noProject }) {
     <button class="check" type="button" onClick=${complete} aria-label="Als erledigt markieren" title="Erledigt"><${Icon} n="check" /></button>
     <div class="todo-main">
       <div class="todo-title">${card.title}</div>
-      <div class="todo-meta"><span class="dot"></span><span>${meta}</span><${CardBadges} card=${card} /><${TeamMarks} card=${card} /></div>
+      <div class="todo-meta"><span class="dot"></span><span>${meta}</span><${CardBadges} card=${card} noAnswer=${!!answer} /><${TeamMarks} card=${card} /></div>
+      ${answer && html`<div class="todo-answer" title=${answer.subject || ''}>„${answer.subject || 'ohne Betreff'}“</div>`}
       ${follow && html`<div class="todo-later" role="group" aria-label="Wieder vorlegen">
         <span>Wieder in</span>
         ${FOLLOW_STEPS.map(([d, l]) => html`<button type="button" key=${d} onClick=${(e) => later(e, d)}>${l}</button>`)}
@@ -1913,11 +1975,14 @@ function ProjectShare({ project }) {
   return html`<div class="project-share"><span class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(owner) || owner}</span></div>`;
 }
 
-function CardBadges({ card }) {
+function CardBadges({ card, noAnswer }) {
+  const { idx } = useApp();
   const due = dueInfo(card.due_date);
   const p = PRIO[card.priority];
-  if (!due && !p) return null;
+  const a = !noAnswer && idx.answerOf.get(card.id);
+  if (!due && !p && !a) return null;
   return html`<span class="badges">
+    ${a && html`<span class="badge answer-badge" title=${`${a.from_name || a.from_email}: ${a.subject || 'ohne Betreff'}`}>Antwort da</span>`}
     ${p && html`<span class=${'prio prio-' + card.priority}>${p.label}</span>`}
     ${due && html`<span class=${'due ' + due.cls}>${due.label}</span>`}
   </span>`;
@@ -2222,6 +2287,7 @@ function CardSheet({ id, query }) {
   const guestProjects = new Set(project_shares.filter((x) => x.email.toLowerCase() === me).map((x) => x.project_id));
   const person = idx.person.get(form.person_id);
   const org = idx.org.get(form.org_id);
+  const answer = card && !isGuest ? idx.answerOf.get(card.id) : null;
 
   const saveTop = html`<button type="button" class="btn primary sm" disabled=${busy || !form.title.trim()} onClick=${saveAll}
     title="Aufgabe und angefangene Notiz speichern und schließen">Speichern</button>`;
@@ -2231,6 +2297,12 @@ function CardSheet({ id, query }) {
     ${dropping && html`<div class="drop-hint"><${Icon} n="clip" />Dateien hier ablegen, sie hängen dann an „${card.title}“</div>`}
     <form class="form" onSubmit=${submit}>
       ${card?.archived && html`<div class="notice">Diese Aufgabe ist archiviert und erscheint nicht auf dem Board.</div>`}
+      ${answer && html`<div class="notice answer-notice">
+        <strong>Antwort da:</strong> ${answer.from_name || answer.from_email} hat ${relDate(answer.sent_at).replace(/^\d/, 'am $&')} geschrieben,
+        „${answer.subject || 'ohne Betreff'}“. Der Hinweis verschwindet, sobald du die Aufgabe änderst, eine Notiz schreibst oder antwortest.
+        ${kannSenden && html`<div class="notice-actions"><a class="btn sm" href=${`#/mail/neu?antwort=${answer.email_id}`}
+          onClick=${(e) => { if (dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) e.preventDefault(); }}><${Icon} n="reply" />Antworten</a></div>`}
+      </div>`}
       ${isGuest && !isNew ? html`<h2 class="ev-sheet-title">${form.title}</h2>
         <p class="meta">${idx.project.get(form.project_id)?.name}</p>` : html`
       <label class="field"><span>Titel</span>
@@ -3409,7 +3481,7 @@ function MeetingsPanel({ ids }) {
 // ---------------------------------------------------------------------------
 // E-Mails (kommen über tools/mail_abgleich.py aus den Postfächern)
 // ---------------------------------------------------------------------------
-const EMAIL_COLUMNS = 'id,thread_id,mailbox,gmail_id,direction,from_email,from_name,to_emails,cc_emails,subject,snippet,sent_at,attachments';
+const EMAIL_COLUMNS = 'id,thread_id,mailbox,gmail_id,direction,from_email,from_name,to_emails,cc_emails,subject,snippet,sent_at,attachments,created_at';
 
 // Datum wie in Gmail: heute die Uhrzeit, in diesem Jahr Tag und Monat, sonst das ganze Datum
 function mailDate(iso) {
@@ -3459,10 +3531,15 @@ function EmailsPanel({ personIds }) {
 // Geladen wird seitenweise direkt aus der Datenbank, die Suche läuft dort über Betreff, Absender und Text.
 // Wie Mails überall im CRM gehört das Postfach nur seinem Besitzer.
 const MAIL_PAGE = 50;
-const MAIL_VIEWS = [['inbox', 'Posteingang'], ['out', 'Gesendet'], ['', 'Alle']];
+// „Ohne Antwort“ (27_nachfass.sql): meine Mail ist die letzte im Verlauf, älter als 3 Tage, keiner der Empfänger
+// hat seitdem geschrieben, in keinem Postfach. Wie der Follow-up-Status im Posteingang von Pipedrive.
+const NACHFASS_TAGE = 3;
+const MAIL_VIEWS = [['inbox', 'Posteingang'], ['out', 'Gesendet'], ['offen', 'Ohne Antwort'], ['', 'Alle']];
+const mailMatches = (m, t) => !t || ['subject', 'from_name', 'from_email', 'snippet'].some((f) => String(m[f] || '').toLowerCase().includes(t))
+  || (m.to_emails || []).some((a) => a.toLowerCase().includes(t));
 
 function MailboxPage() {
-  const { actions, idx, users, me } = useApp();
+  const { actions, idx, users, me, postfach_neu: neu } = useApp();
   const [box, setBox] = useStored('crm-postfach-box', '');
   const [view, setView] = useStored('crm-postfach-ansicht', 'inbox');
   const [q, setQ] = useStored('crm-postfach-q', '');
@@ -3472,14 +3549,41 @@ function MailboxPage() {
   const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [people, setPeople] = useState(new Map());
+  const [offen, setOffen] = useState(null);
+  const [aus, setAus] = useState(new Set());
+  // Was seit dem vorigen Öffnen des Postfachs ankam, ist hervorgehoben. Beim ersten Öffnen überhaupt ist nichts neu.
+  const [seenBefore, setSeenBefore] = useState(undefined);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // Postfach gilt als gesehen, die Zahl in der Navigation geht auf null. Kommen bei offenem Postfach
+  // neue Mails dazu (Zahl wird alle 5 Minuten geholt), lädt die Liste neu und die Zahl geht wieder auf null.
+  useEffect(() => {
+    db.rpc('postfach_gesehen').then((v) => setSeenBefore(v ? ts(v) : null)).catch(() => setSeenBefore(null));
+    actions.setPostfachNeu(0);
+  }, []);
+  useEffect(() => {
+    // Erst nach dem ersten Merken, sonst überholt dieser Aufruf den obigen und nichts wäre hervorgehoben
+    if (!neu || seenBefore === undefined) return;
+    db.rpc('postfach_gesehen').catch(() => {});
+    actions.setPostfachNeu(0);
+    setReloadKey((k) => k + 1);
+  }, [neu]);
+  const isNew = (m) => !!seenBefore && m.direction === 'in' && ts(m.created_at) > seenBefore;
 
   // Für die Zähler je Postfach nur die kleinen Spalten aller Mails
-  useEffect(() => { db.list('emails', {}, 'mailbox,direction,in_inbox').then(setAll).catch(actions.fail); }, []);
+  useEffect(() => { db.list('emails', {}, 'mailbox,direction,in_inbox').then(setAll).catch(actions.fail); }, [reloadKey]);
+  // Ohne Antwort: kommt als Ganzes, gefiltert wird hier
+  useEffect(() => {
+    if (view !== 'offen') return;
+    setOffen(null);
+    db.rpc('mails_ohne_antwort', { p_tage: NACHFASS_TAGE }).then((rows) => setOffen(rows || [])).catch((e) => { actions.fail(e); setOffen([]); });
+  }, [view, reloadKey]);
+  const offenSichtbar = useMemo(() => (offen || []).filter((m) => !aus.has(m.id)), [offen, aus]);
   const boxes = useMemo(() => {
     const n = new Map();
-    all.filter((m) => matchesView(m, view)).forEach((m) => n.set(m.mailbox, (n.get(m.mailbox) || 0) + 1));
+    (view === 'offen' ? offenSichtbar : all.filter((m) => matchesView(m, view))).forEach((m) => n.set(m.mailbox, (n.get(m.mailbox) || 0) + 1));
     return [...n.entries()].sort((a, b) => b[1] - a[1]);
-  }, [all, view]);
+  }, [all, view, offenSichtbar]);
   // Suche erst nach einer kurzen Tipp-Pause abschicken
   useEffect(() => {
     const t = setTimeout(() => setText(q.trim()), 350);
@@ -3508,11 +3612,18 @@ function MailboxPage() {
     return rows;
   }
   useEffect(() => {
+    if (view === 'offen') return undefined;
     let alive = true;
-    setMails(null);
+    // Beim Nachladen wegen neuer Mails bleibt die Liste stehen, bis die neue da ist
+    if (!reloadKey) setMails(null);
     load(null).then((rows) => { if (alive) setMails(rows); }).catch((e) => { actions.fail(e); if (alive) setMails([]); });
     return () => { alive = false; };
-  }, [box, view, text]);
+  }, [box, view, text, reloadKey]);
+  // Kontakte zu den Mails ohne Antwort
+  useEffect(() => {
+    if (view !== 'offen' || !offen) return;
+    linksOf(offen).then(setPeople).catch(() => {});
+  }, [view, offen]);
 
   async function older() {
     setBusy(true);
@@ -3522,9 +3633,28 @@ function MailboxPage() {
     } catch (e) { actions.fail(e); } finally { setBusy(false); }
   }
 
+  // „Braucht keine Antwort“: Verlauf ausblenden, bis ich darin wieder schreibe. Mit Rückgängig.
+  async function keineAntwort(m) {
+    setAus((s) => new Set([...s, m.id]));
+    try {
+      const row = await db.upsert('nachfass_aus', { owner: me, mailbox: m.mailbox, thread_key: m.thread_key, at: new Date().toISOString() },
+        'owner,mailbox,thread_key');
+      actions.notify(`„${m.subject || 'ohne Betreff'}“ ausgeblendet.`, async () => {
+        setAus((s) => new Set([...s].filter((x) => x !== m.id)));
+        try { await db.remove('nachfass_aus', row.id); } catch (e) { actions.fail(e); }
+      });
+    } catch (e) {
+      setAus((s) => new Set([...s].filter((x) => x !== m.id)));
+      actions.fail(e);
+    }
+  }
+
+  const t = text.toLowerCase();
+  const list = view === 'offen' ? (offen === null ? null : offenSichtbar.filter((m) => (!box || m.mailbox === box) && mailMatches(m, t))) : mails;
   const total = boxes.reduce((s, [, n]) => s + n, 0);
   const empty = text || box ? 'Keine passenden Mails.'
-    : view === 'inbox' ? 'Der Posteingang ist leer.' : 'Noch keine Mails. Sie kommen über den Abgleich aus den angebundenen Postfächern.';
+    : view === 'offen' ? `Keine offenen Mails. Alles, was du vor mehr als ${NACHFASS_TAGE} Tagen geschrieben hast, hat eine Antwort bekommen oder ist ausgeblendet.`
+      : view === 'inbox' ? 'Der Posteingang ist leer.' : 'Noch keine Mails. Sie kommen über den Abgleich aus den angebundenen Postfächern.';
   return html`<div class="page">
     <${PageHead} title="Postfach" count=${!text ? (box ? boxes.find(([b]) => b === box)?.[1] ?? 0 : total) : null}
       action=${html`<a class="btn primary" href="#/mail/neu"><${Icon} n="mail" />Neue Mail</a>`} />
@@ -3537,17 +3667,23 @@ function MailboxPage() {
     </div>
     ${boxes.length > 1 && html`<${LabelFilter} labels=${boxes} value=${box} onChange=${setBox} />`}
     ${view === 'inbox' && html`<p class="muted small">Was in Gmail noch im Posteingang liegt. Archivierte und in Ordner verschobene Mails stehen unter „Alle“.</p>`}
-    ${mails === null ? html`<p class="muted pad">Lädt …</p>`
-    : mails.length === 0 ? html`<p class="muted pad">${empty}</p>`
+    ${view === 'offen' && html`<p class="muted small">Deine Mails der letzten 60 Tage, die älter als ${NACHFASS_TAGE} Tage sind und auf die keiner der Empfänger
+      geantwortet hat, egal in welches Postfach. „Braucht keine Antwort“ blendet eine Mail aus, bis du im selben Verlauf wieder schreibst.</p>`}
+    ${list === null ? html`<p class="muted pad">Lädt …</p>`
+    : list.length === 0 ? html`<p class="muted pad">${empty}</p>`
     : html`<section class="notes mails postfach">
-        ${mails.map((m) => html`<${EmailItem} key=${m.id} mail=${m} people=${people.get(m.id)} showBox=${!box && boxes.length > 1} />`)}
+        ${list.map((m) => html`<${EmailItem} key=${m.id} mail=${m} people=${people.get(m.id)} showBox=${!box && boxes.length > 1}
+          isNew=${isNew(m)} offen=${view === 'offen' ? { onAus: () => keineAntwort(m) } : null} />`)}
       </section>`}
-    ${more && mails?.length > 0 && html`<button class="btn ghost full" disabled=${busy} onClick=${older}>${busy ? 'Lädt …' : 'Ältere laden'}</button>`}
+    ${view !== 'offen' && more && mails?.length > 0 && html`<button class="btn ghost full" disabled=${busy} onClick=${older}>${busy ? 'Lädt …' : 'Ältere laden'}</button>`}
   </div>`;
 }
 
-function EmailItem({ mail: m, people = [], showBox = false }) {
+// isNew: seit dem letzten Blick ins Postfach angekommen. offen: in der Ansicht „Ohne Antwort“, mit onAus fürs Ausblenden.
+function EmailItem({ mail: m, people = [], showBox = false, isNew = false, offen = null }) {
   const { actions } = useApp();
+  const wartet = offen ? Math.max(1, Math.floor((Date.now() - ts(m.sent_at)) / 864e5)) : 0;
+  const ausBtn = (e) => { e.stopPropagation(); offen.onAus(); };
   const kannSenden = useKannSenden();
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState(null);
@@ -3594,12 +3730,13 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
       }
     } catch (e) { if (w) w.close(); actions.fail(e); } finally { setFileBusy(null); }
   }
-  return html`<article class=${'mail' + (open ? ' open' : '')}>
+  return html`<article class=${'mail' + (open ? ' open' : '') + (isNew ? ' neu' : '')}>
     <div class="mail-row" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}
       onKeyDown=${(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } }}>
-      <span class=${'mail-dir ' + (out ? 'out' : 'in')} title=${out ? 'Gesendet' : 'Empfangen'}>${out ? '↗' : '↘'}</span>
+      <span class=${'mail-dir ' + (out ? 'out' : 'in')} title=${out ? 'Gesendet' : isNew ? 'Neu seit deinem letzten Blick' : 'Empfangen'}>${out ? '↗' : '↘'}</span>
       <span class="mail-from">${who}</span>
       <span class="mail-line">
+        ${offen && html`<span class="mail-wait" title="So lange wartest du schon auf eine Antwort">seit ${wartet} ${wartet === 1 ? 'Tag' : 'Tagen'}</span>`}
         ${showBox && html`<span class="mail-box">${m.mailbox.split('@')[1] || m.mailbox}</span>`}
         <span class="mail-subject">${m.subject || '(ohne Betreff)'}</span>
         ${snippet && html`<span class="mail-snippet"> – ${snippet}</span>`}
@@ -3613,6 +3750,7 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
           ${taskHref && html`<a class="icon-btn sm" href=${taskHref} title=${`Aufgabe mit ${person.name} anlegen`} aria-label="Aufgabe anlegen"><${Icon} n="board" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/termin/neu?gast=${person.id}`} title=${`Termin mit ${person.name}`} aria-label="Termin einladen"><${Icon} n="calendar" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/kontakt/${person.id}`} title=${`Kontakt ${person.name} öffnen`} aria-label="Kontakt öffnen"><${Icon} n="person" /></a>`}
+          ${offen && html`<button type="button" class="icon-btn sm" onClick=${ausBtn} title="Braucht keine Antwort, ausblenden" aria-label="Braucht keine Antwort"><${Icon} n="check" /></button>`}
           <${ClaudeButton} prompt=${claudeAsk.mail(m)} cls="icon-btn sm" label="" />
         </span>
       </span>
@@ -3628,7 +3766,8 @@ function EmailItem({ mail: m, people = [], showBox = false }) {
           <${Icon} n="file" /><span>${fileBusy === i ? 'Öffnet …' : f}</span></button>`)}
       </div>`}
       <div class="mail-buttons">
-        ${kannSenden && html`<a class="btn sm" href=${replyHref}><${Icon} n="reply" />Antworten</a>`}
+        ${kannSenden && html`<a class="btn sm" href=${replyHref}><${Icon} n="reply" />${offen ? 'Nachhaken' : 'Antworten'}</a>`}
+        ${offen && html`<button type="button" class="btn sm" onClick=${ausBtn}><${Icon} n="check" />Braucht keine Antwort</button>`}
         ${kannSenden && weitere > (out ? 1 : 0) && html`<a class="btn sm" href=${replyHref + '&alle=1'}><${Icon} n="reply" />Allen antworten</a>`}
         ${gmailUrl && html`<a class="btn sm" href=${gmailUrl} target="_blank" rel="noopener"><${Icon} n=${kannSenden ? 'link' : 'reply'} />${kannSenden ? 'In Gmail öffnen' : 'In Gmail antworten'}</a>`}
         ${taskHref && html`<a class="btn sm" href=${taskHref}><${Icon} n="board" />Aufgabe anlegen</a>`}

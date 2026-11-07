@@ -145,6 +145,14 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .topnav a { padding: 7px 14px; border-radius: 999px; color: var(--muted); text-decoration: none; font-weight: 500; }
 .topnav a:hover { color: var(--text); background: var(--hover); }
 .topnav a.on { color: var(--gold-l); background: var(--accent-soft); }
+/* Kleine Zahlen an Übersicht und Postfach, wie in Pipedrive */
+.nav-count {
+  display: inline-block; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font: 700 11px/18px var(--font); text-align: center; vertical-align: 1px;
+}
+.nav-count.warn { background: var(--danger); color: #fff; }
+.tab-ico { position: relative; display: inline-flex; }
+.tabbar .nav-count { position: absolute; top: -5px; left: 15px; margin: 0; box-shadow: 0 0 0 2px var(--surface); }
 .topbar-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .main { flex: 1; padding: 20px; min-width: 0; }
 .tabbar { display: none; }
@@ -387,6 +395,12 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 /* Erwähnungen */
 .mention { color: var(--gold-l); font-weight: 600; background: var(--accent-soft); border-radius: 4px; padding: 0 3px; }
 .badge.mention-badge { background: var(--gold); color: var(--accent-ink); font-weight: 600; }
+/* Antwort da: der Kontakt hat auf eine wartende Aufgabe geschrieben (27_nachfass.sql) */
+.badge.answer-badge { background: var(--ok); color: #fff; font-weight: 600; }
+.count.answer-count { background: color-mix(in srgb, var(--ok) 30%, transparent) !important; color: var(--text); margin-right: 4px; }
+.notice.answer-notice { background: color-mix(in srgb, var(--ok) 16%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); }
+.notice-actions { display: flex; gap: 6px; margin-top: 8px; }
+.notice-actions .btn .ico { width: 14px; height: 14px; }
 .mention-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .mention-row .chip { cursor: pointer; }
 
@@ -557,6 +571,15 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
   display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
   background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); font-size: 11px; line-height: 17px;
 }
+/* Neu seit dem letzten Blick ins Postfach: kräftiger und mit Punkt, wie ungelesen in Gmail */
+.mail.neu .mail-from, .mail.neu .mail-subject { font-weight: 700; color: var(--text); }
+.mail.neu .mail-dir.in { background: var(--accent); color: var(--accent-ink); }
+.mail.neu .mail-date { color: var(--text); font-weight: 600; }
+/* Ohne Antwort: wie lange ich schon warte */
+.mail-wait {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
+  background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--text); font-size: 11px; font-weight: 600; line-height: 17px;
+}
 .mail-clip { grid-area: clip; display: inline-flex; color: var(--muted); }
 .mail-clip .ico { width: 15px; height: 15px; }
 .mail-end { grid-area: end; display: flex; justify-content: flex-end; }
@@ -696,6 +719,8 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 /* Wiedervorlagen: neu vorlegen in 3 Tagen, 1 Woche, 2 Wochen */
 .todo-later { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 5px; font-size: 12px; color: var(--muted); }
 .todo-later span { margin-right: 2px; }
+.todo-group h3.group-answer { color: var(--ok); }
+.todo-answer { margin-top: 2px; font-size: 12.5px; color: var(--text); opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .todo-later button {
   padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent;
   color: var(--text); font: 12px var(--font); cursor: pointer;

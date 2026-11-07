@@ -256,9 +256,10 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v5';
+const KEY = 'crm-demo-v6';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
-  'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen'];
+  'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
+  'nachfass_aus', 'nutzer_gesehen'];
 // Zum Ausprobieren der Gast-Ansicht: ?demo&gast in der Adresse
 const DEMO_GUEST = new URLSearchParams(location.search).has('gast');
 const DEMO_USERS = [
@@ -314,6 +315,46 @@ function logDemoUpdate(before, after) {
 export const matchesView = (m, view) => (view === 'inbox' ? (m.in_inbox ?? m.direction === 'in')
   : view === 'out' ? m.direction === 'out' : true);
 
+// Demo: dieselben Regeln wie supabase/27_nachfass.sql
+const t = (iso) => new Date(iso).getTime();
+const lc = (a) => String(a || '').toLowerCase();
+function demoAntworten() {
+  const s = state();
+  return s.cards.flatMap((c) => {
+    const st = s.stages.find((x) => x.id === c.stage_id);
+    if (c.archived || !st || st.is_done || !lc(st.name).startsWith('feedback')) return [];
+    const people = c.person_id ? s.persons.filter((p) => p.id === c.person_id) : s.persons.filter((p) => c.org_id && p.org_id === c.org_id);
+    const addrs = people.flatMap((p) => (p.emails || []).map(lc));
+    if (!addrs.length) return [];
+    const m = s.emails.filter((e) => e.direction === 'in' && addrs.includes(lc(e.from_email)) && t(e.sent_at) > t(c.updated_at))
+      .sort((a, b) => t(b.sent_at) - t(a.sent_at))[0];
+    if (!m) return [];
+    const replied = s.emails.some((x) => x.direction === 'out' && t(x.sent_at) > t(m.sent_at)
+      && [...x.to_emails, ...x.cc_emails].some((y) => addrs.includes(lc(y))));
+    return replied ? [] : [{ card_id: c.id, email_id: m.id, sent_at: m.sent_at, from_name: m.from_name, from_email: m.from_email, subject: m.subject, mailbox: m.mailbox }];
+  });
+}
+function demoOhneAntwort(tage) {
+  const s = state();
+  const eigene = new Set(s.emails.map((e) => lc(e.mailbox)));
+  const last = new Map();
+  s.emails.filter((e) => t(e.sent_at) > Date.now() - 60 * 864e5).forEach((e) => {
+    const k = e.mailbox + '|' + (e.thread_id || e.message_id);
+    if (!last.has(k) || t(e.sent_at) > t(last.get(k).sent_at)) last.set(k, e);
+  });
+  return [...last.values()].filter((m) => {
+    const an = [...m.to_emails, ...m.cc_emails].map(lc);
+    const key = m.thread_id || m.message_id;
+    return m.direction === 'out' && t(m.sent_at) < Date.now() - tage * 864e5 && an.some((a) => !eigene.has(a))
+      && !s.emails.some((i) => i.direction === 'in' && t(i.sent_at) > t(m.sent_at) && an.includes(lc(i.from_email)))
+      && !s.nachfass_aus.some((n) => n.mailbox === m.mailbox && n.thread_key === key && t(n.at) >= t(m.sent_at));
+  }).map((m) => ({ ...copy(m), thread_key: m.thread_id || m.message_id, body: undefined }))
+    .sort((a, b) => t(b.sent_at) - t(a.sent_at));
+}
+function demoGesehen() {
+  return state().nutzer_gesehen.find((g) => g.bereich === 'postfach');
+}
+
 let demoKonten = [
   { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true, darf_termine: true },
   { id: 2, address: 'team@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 0, termine: 0, darf_senden: false, darf_termine: false },
@@ -339,6 +380,21 @@ const demo = {
     if (fn === 'log_file') { logDemo(args.cid, 'datei', args.fname); persist(); }
     if (fn === 'meine_google_konten') return DEMO_GUEST ? [] : demoKonten.map(copy);
     if (fn === 'google_konto_trennen') demoKonten = demoKonten.filter((k) => k.id !== args.kid);
+    if (DEMO_GUEST && ['antworten_offen', 'mails_ohne_antwort'].includes(fn)) return [];
+    if (fn === 'antworten_offen') return demoAntworten();
+    if (fn === 'mails_ohne_antwort') return demoOhneAntwort(args.p_tage ?? 3);
+    if (fn === 'postfach_neu') {
+      const g = demoGesehen();
+      return g && !DEMO_GUEST ? state().emails.filter((e) => e.direction === 'in' && (e.in_inbox ?? true)
+        && t(e.created_at) > t(g.at) && t(e.sent_at) > t(g.at) - 864e5).length : 0;
+    }
+    if (fn === 'postfach_gesehen') {
+      const g = demoGesehen();
+      const vorher = g?.at ?? null;
+      state().nutzer_gesehen = [...state().nutzer_gesehen.filter((x) => x !== g), { id: 1, bereich: 'postfach', at: now() }];
+      persist();
+      return vorher;
+    }
     return null;
   },
   // Postfächer und Senden: nur im Speicher dieses Tabs, verschickt wird nichts
@@ -462,10 +518,13 @@ const demo = {
   async upsert(table, row, onConflict) {
     const s = state();
     const keys = onConflict.split(',');
-    s[table] = s[table].filter((x) => !keys.every((k) => x[k] === row[k]));
-    s[table].push({ ...row });
+    const old = s[table].find((x) => keys.every((k) => x[k] === row[k]));
+    s[table] = s[table].filter((x) => x !== old);
+    if (!old) s.seq += 1;
+    const r = { id: old?.id ?? s.seq, ...row };
+    s[table].push(r);
     persist();
-    return copy(row);
+    return copy(r);
   },
   async remove(table, id) {
     const s = state();

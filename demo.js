@@ -139,6 +139,18 @@ export function demoSeed() {
   mail(anna, 'in', 'Nutzerzahlen Oktober', 0, 'Hallo Alex,\n\nanbei wie besprochen die Nutzerzahlen der letzten Monate.\n\nViele Grüße\nAnna Beispiel',
     { attachments: ['Nutzerzahlen_2026.xlsx', 'Angebot Kundenportal.pdf'] });
   mail(anna, 'out', 'Angebot Kundenportal', 1, 'Hallo Frau Beispiel,\n\ndas Angebot kommt bis Freitag.\n\nBeste Grüße\nAlex Demo\n\nAm 29.10.2026 um 10:12 schrieb Anna Beispiel:\n> Wann können wir mit dem Angebot rechnen?');
+  // Follow-up-Status: Clara hat auf die wartende Aufgabe geantwortet, David und eine Anfrage ohne Kontakt noch nicht
+  mail(clara, 'out', 'Mietvertrag Entwurf', 6, 'Hallo Frau Probe,\n\nanbei der Entwurf. Passt das so?\n\nBeste Grüße\nAlex Demo');
+  mail(clara, 'in', 'Re: Mietvertrag Entwurf', 1, 'Hallo Alex,\n\nzwei kleine Änderungen in Paragraf 3, sonst passt es.\n\nViele Grüße\nClara Probe');
+  mail(david, 'out', 'Entwurf Rahmenvertrag', 5, 'Hallo David,\n\nwie besprochen der Entwurf. Gib gern bis Freitag Bescheid.\n\nBeste Grüße\nAlex');
+  s.emails.push({
+    id: id(), message_id: `<demo-${seq}@beispiel.de>`, thread_id: null, mailbox: 'demo@beispiel.de', gmail_id: null, direction: 'out',
+    from_email: 'demo@beispiel.de', from_name: 'Alex Demo', to_emails: ['info@example.com'], cc_emails: [], subject: 'Anfrage Unterlagen',
+    sent_at: ago(9, 2), body: 'Guten Tag,\n\nkönnen Sie mir die Unterlagen schicken?\n\nBeste Grüße\nAlex Demo', attachments: [], created_at: ago(9),
+  });
+  // Letzter Blick ins Postfach vor 6 Stunden: Annas Mail von heute ist neu
+  s.nutzer_gesehen = [{ id: id(), owner: 'demo@beispiel.de', bereich: 'postfach', at: ago(0, 6) }];
+  s.nachfass_aus = [];
   // Termine heute und in den nächsten Tagen, Uhrzeit in Ortszeit
   const at = (days, hour, min = 0) => {
     const d = new Date();
