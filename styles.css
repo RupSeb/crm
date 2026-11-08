@@ -653,6 +653,29 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .overview .page-head { align-items: baseline; }
 .tiles { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .tile-side { display: flex; flex-direction: column; gap: 16px; }
+/* Spalten der Übersicht, Reihenfolge je Person (Kacheln anordnen) */
+.tile-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.tiles.one { grid-template-columns: minmax(0, 1fr); }
+.tile-slot { min-width: 0; }
+.tile-slot:empty { display: none; }
+.overview .page-action { align-self: center; }
+.overview .page-action .btn .ico { width: 15px; height: 15px; }
+.arrange-hint { margin: -4px 0 12px; }
+.tiles.arranging .tile-col { min-height: 120px; padding: 8px; gap: 8px; border: 1px dashed var(--border-strong); border-radius: 16px; }
+.tile-ghost {
+  display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--tc, var(--gold)); box-shadow: var(--shadow);
+}
+.tile-ghost[draggable="true"] { cursor: grab; }
+.tile-ghost.dragging { opacity: 0.4; }
+.tile-ghost.over { box-shadow: 0 -3px 0 0 var(--accent), var(--shadow); }
+.tile-grip { color: var(--muted); font-size: 16px; line-height: 1; }
+.tile-ghost-name { flex: 1; min-width: 0; font-weight: 600; }
+.tile-moves { display: flex; gap: 2px; }
+.tile-moves .icon-btn { width: 34px; height: 34px; font-size: 16px; }
+.tile-moves .icon-btn:disabled { opacity: 0.3; cursor: default; }
+.tile-drop { min-height: 40px; flex: 1; display: flex; align-items: center; justify-content: center; border-radius: 12px; color: var(--muted); font-size: 12.5px; }
+.tile-drop.over { background: var(--accent-soft); color: var(--text); }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 18px; box-shadow: var(--shadow); }
 .tile h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; font-size: 16px; font-weight: 600; }
 .tile-main { border-top: 2px solid var(--gold); }
@@ -1081,7 +1104,7 @@ details.more[open] summary { margin-bottom: 12px; }
   .field-row { flex-direction: column; }
   .tiles { display: flex; flex-direction: column; }
   .tile-side { display: contents; }
-  .tile.has-due { order: -1; }
+  .tiles.arranging { gap: 8px; }
   .tile { padding: 14px; }
   .tabbar a { font-size: 10.5px; }
   /* iOS zoomt in Felder unter 16px hinein */

@@ -1644,7 +1644,7 @@ function TeamTile() {
 }
 
 function Overview() {
-  const { projects, cards, meetings, idx, me } = useApp();
+  const { projects, cards, meetings, idx, me, users, isMobile, einstellungen, actions } = useApp();
   const [showAll, setShowAll] = useState({});
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
   // Was nur anderen zugewiesen ist, steht nicht auf meiner Liste, sondern unter „Team“
@@ -1659,10 +1659,69 @@ function Overview() {
   const recent = [...meetings].sort(byHeldDesc).slice(0, 6);
   const today = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
 
-  return html`<div class="page overview">
-    <div class="page-head"><h1>Übersicht</h1><span class="muted">${today}</span></div>
-    <div class="tiles">
-      <${Tile} id="todo" cls="tile-main" title=${html`Zu erledigen <span class="count">${todo.length}</span>`}>
+  // Kacheln anordnen (Wunsch 08.11.2026): Reihenfolge und Spalte je Person, auf allen Geräten gleich
+  const [arrange, setArrange] = useState(false);
+  const [drag, setDrag] = useState(null);
+  const [over, setOver] = useState(null);
+  const lay = tileLayout(einstellungen.kacheln);
+  const avail = (id) => id !== 'team' || users.length > 1;
+  const f = followUpOf(open, idx);
+  let reihe = lay.reihe.filter(avail);
+  // Ohne eigene Anordnung rückt am Handy wie bisher die Wiedervorlagen nach oben, sobald dort etwas ansteht
+  if (isMobile && !lay.eigen && !arrange && (f.due.length || f.answered.length)) reihe = ['wiedervorlagen', ...reihe.filter((x) => x !== 'wiedervorlagen')];
+  const isLeft = (id) => lay.breit.includes(id);
+  const left = reihe.filter(isLeft);
+  const right = reihe.filter((x) => !isLeft(x));
+  const save = (next) => actions.saveEinstellungen({ kacheln: next }).catch(() => {});
+  // Nach oben oder unten innerhalb der eigenen Spalte, am Handy in der einen Reihe
+  const colOf = (id) => (isMobile ? reihe : isLeft(id) ? left : right);
+  function move(id, dir) {
+    const col = colOf(id);
+    const other = col[col.indexOf(id) + dir];
+    if (!other) return;
+    const r = [...lay.reihe];
+    const a = r.indexOf(id);
+    const b = r.indexOf(other);
+    [r[a], r[b]] = [r[b], r[a]];
+    save({ reihe: r, breit: lay.breit });
+  }
+  const side = (id) => save({ reihe: lay.reihe, breit: isLeft(id) ? lay.breit.filter((x) => x !== id) : [...lay.breit, id] });
+  // Ziehen am Rechner: vor der Ziel-Kachel einfügen, ohne Ziel ans Ende der Spalte
+  function dropOn(target, toLeft) {
+    const id = drag;
+    setDrag(null);
+    setOver(null);
+    if (!id || id === target) return;
+    const r = lay.reihe.filter((x) => x !== id);
+    r.splice(target ? r.indexOf(target) : r.length, 0, id);
+    save({ reihe: r, breit: toLeft ? [...new Set([...lay.breit, id])] : lay.breit.filter((x) => x !== id) });
+  }
+  const dragProps = (target, toLeft) => (isMobile ? {} : {
+    onDragOver: (e) => { if (drag) { e.preventDefault(); if (over !== (target || (toLeft ? ':links' : ':rechts'))) setOver(target || (toLeft ? ':links' : ':rechts')); } },
+    onDrop: (e) => { e.preventDefault(); e.stopPropagation(); dropOn(target, toLeft); },
+  });
+  const ghost = (id) => {
+    const col = colOf(id);
+    const i = col.indexOf(id);
+    return html`<div key=${id} class=${'tile-ghost' + (drag === id ? ' dragging' : '') + (over === id && drag !== id ? ' over' : '')}
+        style=${`--tc:${tileColors()[id] || TILE_COLORS[id]}`} draggable=${!isMobile}
+        onDragStart=${(e) => { setDrag(id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id); }}
+        onDragEnd=${() => { setDrag(null); setOver(null); }} ...${dragProps(id, isLeft(id))}>
+      ${!isMobile && html`<span class="tile-grip" aria-hidden="true">⠿</span>`}
+      <span class="tile-ghost-name">${TILE_NAMES[id]}</span>
+      <span class="tile-moves">
+        <button type="button" class="icon-btn sm" disabled=${i <= 0} onClick=${() => move(id, -1)} title="Nach oben" aria-label=${`${TILE_NAMES[id]} nach oben`}>↑</button>
+        <button type="button" class="icon-btn sm" disabled=${i >= col.length - 1} onClick=${() => move(id, 1)} title="Nach unten" aria-label=${`${TILE_NAMES[id]} nach unten`}>↓</button>
+        ${!isMobile && html`<button type="button" class="icon-btn sm" onClick=${() => side(id)}
+          title=${isLeft(id) ? 'In die rechte Spalte' : 'In die linke Spalte'} aria-label=${`${TILE_NAMES[id]} ${isLeft(id) ? 'in die rechte Spalte' : 'in die linke Spalte'}`}>${isLeft(id) ? '→' : '←'}</button>`}
+      </span>
+    </div>`;
+  };
+  const dropEnd = (toLeft) => html`<div class=${'tile-drop' + (over === (toLeft ? ':links' : ':rechts') ? ' over' : '')} ...${dragProps(null, toLeft)}>
+    ${drag ? 'Hier ablegen' : (toLeft ? left : right).length ? '' : 'Leere Spalte, Kachel hierher ziehen'}</div>`;
+
+  const tiles = {
+    todo: () => html`<${Tile} id="todo" cls="tile-main" title=${html`Zu erledigen <span class="count">${todo.length}</span>`}>
         <${QuickAdd} />
         ${sections.map(([p, list]) => {
     // Hoch und Mittel immer ganz, vom Rest bis mindestens 8 Zeilen, alles Weitere nach „Alle anzeigen“.
@@ -1680,12 +1739,11 @@ function Overview() {
           </div>`;
   })}
         ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
-      <//>
-      <div class="tile-side">
-        <${FollowUpTile} open=${open} />
-        <${TeamTile} />
-        <${TodayEvents} />
-        <${Tile} id="meetings" title="Letzte Meetings">
+      <//>`,
+    wiedervorlagen: () => html`<${FollowUpTile} open=${open} />`,
+    team: () => html`<${TeamTile} />`,
+    termine: () => html`<${TodayEvents} />`,
+    meetings: () => html`<${Tile} id="meetings" title="Letzte Meetings">
           ${recent.map((m) => {
     const pr = idx.project.get(m.project_id);
     return html`<a key=${m.id} class="mini-card" href=${`#/meeting/${m.id}`} style=${`--pc:${pr?.color || '#888'}`}>
@@ -1695,10 +1753,46 @@ function Overview() {
   })}
           ${recent.length === 0 && html`<p class="muted small">Noch keine Meetings.</p>`}
           <a class="btn link sm" href="#/meetings">Alle Meetings</a>
-        <//>
-      </div>
+        <//>`,
+  };
+  const slot = (id) => html`<div class="tile-slot" key=${id}>${tiles[id]()}</div>`;
+
+  return html`<div class="page overview">
+    <div class="page-head"><h1>Übersicht</h1><span class="muted">${today}</span>
+      <div class="page-action">${arrange ? html`
+        ${lay.eigen && html`<button type="button" class="btn sm ghost" onClick=${() => save(null)} title="Kacheln wieder wie am Anfang anordnen">Standard</button>`}
+        <button type="button" class="btn sm primary" onClick=${() => setArrange(false)}>Fertig</button>`
+    : html`<button type="button" class="btn sm ghost" onClick=${() => setArrange(true)} title="Kacheln verschieben und anders anordnen">
+        <${Icon} n="board" />Anordnen</button>`}</div>
     </div>
+    ${arrange && html`<p class="muted small arrange-hint">${isMobile
+    ? 'Mit den Pfeilen nach oben oder unten verschieben.'
+    : 'Kacheln ziehen oder mit den Pfeilen verschieben, ← und → wechseln die Spalte.'} Die Anordnung gilt auf allen deinen Geräten.</p>`}
+    ${arrange
+    ? (isMobile ? html`<div class="tiles arranging">${reihe.map(ghost)}</div>`
+      : html`<div class="tiles arranging">
+          <div class="tile-col">${left.map(ghost)}${dropEnd(true)}</div>
+          <div class="tile-col">${right.map(ghost)}${dropEnd(false)}</div>
+        </div>`)
+    : isMobile ? html`<div class="tiles">${reihe.map(slot)}</div>`
+      : html`<div class=${'tiles' + (!left.length || !right.length ? ' one' : '')}>
+          ${left.length > 0 && html`<div class="tile-col">${left.map(slot)}</div>`}
+          ${right.length > 0 && html`<div class="tile-col">${right.map(slot)}</div>`}
+        </div>`}
   </div>`;
+}
+
+// Kacheln der Übersicht: Reihenfolge (reihe) und welche in der breiten linken Spalte stehen (breit).
+// Gespeichert in nutzer_einstellungen.werte.kacheln. Neue Kacheln hängen sich hinten an, unbekannte fallen weg.
+const TILE_IDS = ['todo', 'wiedervorlagen', 'team', 'termine', 'meetings'];
+const TILE_NAMES = { todo: 'Zu erledigen', wiedervorlagen: 'Wiedervorlagen', team: 'Team', termine: 'Termine heute und morgen', meetings: 'Letzte Meetings' };
+function tileLayout(k) {
+  const saved = (k?.reihe || []).filter((id) => TILE_IDS.includes(id));
+  return {
+    reihe: [...saved, ...TILE_IDS.filter((id) => !saved.includes(id))],
+    breit: (k?.breit || ['todo']).filter((id) => TILE_IDS.includes(id)),
+    eigen: !!k,
+  };
 }
 
 function QuickAdd() {
