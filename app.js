@@ -982,7 +982,8 @@ function Main({ session }) {
   return html`<${Ctx.Provider} value=${ctx}>
     <div class=${'shell' + (isGuest ? ' guest' : '')}>
       <header class="topbar">
-        <a class="brand" href=${isGuest ? '#/geteilt' : '#/heute'}><${BrandMark} />${APP_NAME}</a>
+        <a class="brand" href=${isGuest ? '#/geteilt' : '#/heute'}><${BrandMark} /><span class="brand-name">${APP_NAME}</span></a>
+        ${!isGuest && html`<${GlobalSearch} />`}
         <nav class="topnav">
           ${tabs.map(([key, label, , href]) => html`<a key=${key} href=${href} class=${tab === key ? 'on' : ''}>${label}${countMark(key)}</a>`)}
         </nav>
@@ -1426,6 +1427,102 @@ function SearchBox({ value, onInput, placeholder }) {
     <input type="search" placeholder=${placeholder} value=${value} onInput=${(e) => onInput(e.target.value)} /></label>`;
 }
 
+// Suche oben in der Leiste (Wunsch 08.11.2026, ersetzt das Feld „Was steht an?“ der Kachel): immer sichtbar, über Deals,
+// Kontakte, Firmen und Meetings. Unten in der Liste „+ als Aufgabe anlegen“ und „in den Mails suchen“.
+// Strg+K oder / springt hinein, Pfeile wählen, Enter öffnet, Escape leert.
+function GlobalSearch() {
+  const { cards, persons, organizations, meetings, projects, stages, idx, actions } = useApp();
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onKey = (e) => {
+      const el = document.activeElement;
+      const typing = /^(input|textarea|select)$/i.test(el?.tagName || '') || el?.isContentEditable;
+      if ((e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing)) {
+        e.preventDefault();
+        ref.current?.focus();
+        setOpen(true);
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, []);
+  const t = q.trim();
+  const ziel = useMemo(() => {
+    const saved = Number(ls.get('crm-quick-project'));
+    return projects.find((p) => p.id === saved) || projects.find((p) => norm(p.name) === 'allgemein') || projects[0];
+  }, [projects]);
+  const hits = useMemo(() => {
+    if (t.length < 2) return [];
+    const out = [];
+    const done = (c) => (c.archived ? 2 : idx.stage.get(c.stage_id)?.is_done ? 1 : 0);
+    cards.filter((c) => matches(t, c.title, c.labels || [], idx.person.get(c.person_id)?.name, idx.org.get(c.org_id)?.name))
+      .sort((a, b) => done(a) - done(b) || byUpdatedDesc(a, b)).slice(0, 6)
+      .forEach((c) => out.push({ key: 'c' + c.id, icon: 'board', label: c.title, href: `#/karte/${c.id}`,
+        sub: [idx.project.get(c.project_id)?.name, idx.stage.get(c.stage_id)?.name, c.archived ? 'archiviert' : ''].filter(Boolean).join(' · ') }));
+    persons.filter((p) => matches(t, p.name, p.emails, p.phones, idx.org.get(p.org_id)?.name)).sort(byUpdatedDesc).slice(0, 5)
+      .forEach((p) => out.push({ key: 'p' + p.id, icon: 'person', label: p.name, href: `#/kontakt/${p.id}`,
+        sub: [idx.org.get(p.org_id)?.name, p.emails?.[0]].filter(Boolean).join(' · ') }));
+    organizations.filter((o) => matches(t, o.name, o.website)).sort(byUpdatedDesc).slice(0, 4)
+      .forEach((o) => out.push({ key: 'o' + o.id, icon: 'building', label: o.name, href: `#/firma/${o.id}`, sub: o.website || 'Firma' }));
+    meetings.filter((m) => matches(t, m.title)).sort(byHeldDesc).slice(0, 3)
+      .forEach((m) => out.push({ key: 'm' + m.id, icon: 'mic', label: m.title, href: `#/meeting/${m.id}`,
+        sub: [shortDate(m.held_at), idx.project.get(m.project_id)?.name].filter(Boolean).join(' · ') }));
+    return out;
+  }, [t, cards, persons, organizations, meetings, idx]);
+  const options = t ? [...hits,
+    ...(ziel ? [{ key: 'neu', icon: 'plus', act: true, label: `„${t}“ als Aufgabe anlegen`, sub: `in ${ziel.name}, Spalte To-Dos` }] : []),
+    { key: 'mail', icon: 'mail', act: true, label: `„${t}“ in den Mails suchen`, sub: 'öffnet das Postfach mit diesem Suchbegriff' }] : [];
+  const close = () => { setQ(''); setOpen(false); setActive(0); ref.current?.blur(); };
+  async function pick(o) {
+    if (!o) return;
+    if (o.key === 'neu') {
+      const cols = stages.filter((s) => s.project_id === ziel.id).sort(bySort);
+      const stage = cols.find((s) => stageKind(s) === 'todo') || cols[0];
+      if (!stage) return;
+      const title = t;
+      close();
+      try {
+        const card = await actions.save('cards', { title, project_id: ziel.id, stage_id: stage.id });
+        actions.notify(`„${title}“ in ${ziel.name} angelegt.`, () => actions.remove('cards', card.id));
+      } catch { /* Meldung kommt über fail */ }
+      return;
+    }
+    if (o.key === 'mail') {
+      try { sessionStorage.setItem('crm-postfach-q', t); sessionStorage.setItem('crm-postfach-ansicht', ''); } catch { /* egal */ }
+      close();
+      go('#/postfach');
+      return;
+    }
+    close();
+    go(o.href);
+  }
+  function onKey(e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActive((x) => Math.min(x + 1, options.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((x) => Math.max(x - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); pick(options[active]); }
+    else if (e.key === 'Escape') { e.stopPropagation(); if (q) { setQ(''); setActive(0); } else close(); }
+  }
+  return html`<div class="gsearch" role="search">
+    <label class="search"><${Icon} n="search" />
+      <input ref=${ref} type="search" value=${q} placeholder="Suchen oder neue Aufgabe" autocomplete="off" aria-label="Im CRM suchen"
+        title="Suchen in Deals, Kontakten, Firmen und Meetings (Strg+K)"
+        onInput=${(e) => { setQ(e.target.value); setOpen(true); setActive(0); }} onFocus=${() => setOpen(true)}
+        onBlur=${() => setTimeout(() => setOpen(false), 150)} onKeyDown=${onKey} /></label>
+    ${open && t && html`<ul class="gsearch-list" role="listbox">
+      ${t.length >= 2 && !hits.length && html`<li class="gs-hint" aria-disabled="true">Nichts gefunden in Deals, Kontakten, Firmen und Meetings.</li>`}
+      ${t.length < 2 && html`<li class="gs-hint" aria-disabled="true">Ab zwei Zeichen wird gesucht.</li>`}
+      ${options.map((o, i) => html`<li key=${o.key} role="option" class=${(i === active ? 'on' : '') + (o.act ? ' gs-act' : '')}
+          onMouseDown=${(e) => { e.preventDefault(); pick(o); }} onMouseEnter=${() => setActive(i)}>
+        <span class="gs-ico"><${Icon} n=${o.icon} /></span>
+        <span class="gs-main"><span class="gs-label">${o.label}</span>${o.sub && html`<span class="gs-sub">${o.sub}</span>`}</span>
+      </li>`)}
+    </ul>`}
+  </div>`;
+}
+
 function SortToggle({ value, onChange }) {
   return html`<div class="seg small" role="group" aria-label="Sortierung">
     <button class=${'seg-btn' + (value === 'neu' ? ' on' : '')} onClick=${() => onChange('neu')}>Neueste</button>
@@ -1849,8 +1946,7 @@ function Overview() {
     ${drag ? 'Hier ablegen' : (toLeft ? left : right).length ? '' : 'Leere Spalte, Kachel hierher ziehen'}</div>`;
 
   const tiles = {
-    todo: () => html`<${Tile} id="todo" cls="tile-main" title=${html`Zu erledigen <span class="count">${todo.length}</span>`}>
-        <${QuickAdd} />
+    todo: () => html`<${Tile} id="todo" cls="tile-main" title=${html`Übersicht Deals <span class="count">${todo.length}</span>`}>
         ${sections.map(([p, list]) => {
     // Hoch und Mittel immer ganz, vom Rest bis mindestens 8 Zeilen, alles Weitere nach „Alle anzeigen“.
     // Was heute fällig oder überfällig ist, steht nie hinter „Alle anzeigen“, es kommt ja nicht mehr doppelt
@@ -1866,7 +1962,7 @@ function Overview() {
               ${showAll[p.id] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>` : null}
           </div>`;
   })}
-        ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
+        ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben in der Suche eintippen und „als Aufgabe anlegen“ wählen.</p>`}
       <//>`,
     wiedervorlagen: () => html`<${FollowUpTile} open=${open} />`,
     team: () => html`<${TeamTile} />`,
@@ -1983,7 +2079,7 @@ function Overview() {
 // Kacheln der Übersicht: Reihenfolge (reihe) und welche in der breiten linken Spalte stehen (breit).
 // Gespeichert in nutzer_einstellungen.werte.kacheln. Neue Kacheln hängen sich hinten an, unbekannte fallen weg.
 const TILE_IDS = ['todo', 'wiedervorlagen', 'team', 'termine', 'meetings'];
-const TILE_NAMES = { todo: 'Zu erledigen', wiedervorlagen: 'Wiedervorlagen', team: 'Team', termine: 'Termine heute und morgen', meetings: 'Letzte Meetings' };
+const TILE_NAMES = { todo: 'Übersicht Deals', wiedervorlagen: 'Wiedervorlagen', team: 'Team', termine: 'Termine heute und morgen', meetings: 'Letzte Meetings' };
 function tileLayout(k) {
   const saved = (k?.reihe || []).filter((id) => TILE_IDS.includes(id));
   return {
@@ -1991,51 +2087,6 @@ function tileLayout(k) {
     breit: (k?.breit || ['todo']).filter((id) => TILE_IDS.includes(id)),
     eigen: !!k,
   };
-}
-
-function QuickAdd() {
-  const { projects, stages, actions } = useApp();
-  const fallback = projects.find((p) => norm(p.name) === 'allgemein') || projects[0];
-  const [text, setText] = useState('');
-  const [prio, setPrio] = useState(null);
-  const [due, setDue] = useState('');
-  const [pid, setPid] = useState(() => {
-    const saved = Number(ls.get('crm-quick-project'));
-    return projects.some((p) => p.id === saved) ? saved : fallback?.id;
-  });
-  const [busy, setBusy] = useState(false);
-
-  async function add(e) {
-    e.preventDefault();
-    const title = text.trim();
-    const cols = stages.filter((s) => s.project_id === pid).sort(bySort);
-    const stage = cols.find((s) => stageKind(s) === 'todo') || cols[0];
-    if (!title || !stage) return;
-    setBusy(true);
-    try {
-      await actions.save('cards', { title, project_id: pid, stage_id: stage.id, priority: prio, due_date: due || null });
-      setText('');
-      setPrio(null);
-      setDue('');
-      ls.set('crm-quick-project', String(pid));
-    } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
-  }
-
-  if (!fallback) return null;
-  return html`<form class="quick-add" onSubmit=${add}>
-    <input class="qa-input" placeholder="Was steht an? Eintippen und Enter" value=${text} onInput=${(e) => setText(e.target.value)} />
-    <div class="qa-row">
-      <div class="seg small" role="group" aria-label="Dringlichkeit">
-        ${Object.entries(PRIO).map(([k, p]) => html`<button type="button" key=${k}
-          class=${'seg-btn prio-btn prio-' + k + (prio === k ? ' on' : '')} onClick=${() => setPrio(prio === k ? null : k)}>${p.label}</button>`)}
-      </div>
-      <input type="date" class="qa-date" value=${due} onInput=${(e) => setDue(e.target.value)} aria-label="Fällig am" title="Fällig am" />
-      <select class="qa-project" value=${pid} onChange=${(e) => setPid(Number(e.target.value))} aria-label="Projekt">
-        ${projects.map((p) => html`<option key=${p.id} value=${p.id}>${p.name}</option>`)}
-      </select>
-      <button class="btn primary sm" disabled=${busy || !text.trim()}>Hinzufügen</button>
-    </div>
-  </form>`;
 }
 
 function TodoRow({ card, waiting, follow, noProject, answer }) {

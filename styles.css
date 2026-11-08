@@ -154,6 +154,34 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .tab-ico { position: relative; display: inline-flex; }
 .tabbar .nav-count { position: absolute; top: -5px; left: 15px; margin: 0; box-shadow: 0 0 0 2px var(--surface); }
 .topbar-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* Suche oben in der Leiste, bleibt mit der Leiste beim Scrollen stehen */
+.gsearch { position: relative; flex: 0 1 280px; min-width: 150px; }
+.gsearch .search { height: 36px; min-width: 0; width: 100%; background: var(--surface); }
+.gsearch .search input { font-size: 14px; }
+.gsearch .search input::-webkit-search-cancel-button { display: none; }
+.gsearch-list {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
+  width: min(460px, calc(100vw - 24px)); max-height: min(70vh, 560px); overflow: auto; margin: 0; padding: 6px; list-style: none;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow-lg);
+}
+.gsearch-list li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.gsearch-list li.on { background: var(--accent-soft); }
+.gsearch-list li.gs-hint { cursor: default; color: var(--muted); font-size: 12.5px; padding: 6px 10px; }
+.gs-ico { display: inline-flex; color: var(--muted); flex: none; }
+.gs-ico .ico { width: 16px; height: 16px; }
+.gs-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.gs-label { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gs-sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gsearch-list li.gs-act { border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; }
+.gsearch-list li.gs-act + li.gs-act { border-top: 0; border-radius: 8px; }
+.gsearch-list li.gs-act .gs-label, .gsearch-list li.gs-act .gs-ico { color: var(--accent); font-weight: 600; }
+/* Platz in der Leiste: Reiter etwas enger, Name neben dem Logo erst bei viel Platz */
+@media (max-width: 1240px) { .topnav a { padding: 7px 10px; } .topbar { gap: 12px; } }
+@media (max-width: 1060px) { .brand-name { display: none; } .topnav a { padding: 7px 8px; } }
+@media (max-width: 760px) {
+  .gsearch { flex: 1 1 auto; min-width: 0; }
+  .gsearch-list { position: fixed; top: calc(52px + env(safe-area-inset-top)); left: 8px; right: 8px; width: auto; max-height: 65vh; }
+}
 .main { flex: 1; padding: 20px; min-width: 0; }
 .tabbar { display: none; }
 
