@@ -1653,8 +1653,9 @@ function Tile({ id, title, cls = '', children }) {
     setOwn(v);
     ls.set('crm-tiles', JSON.stringify({ ...tileColors(), [id]: v }));
   }
+  // Der Griff links im Kopf verschiebt die Kachel (Übersicht, Ziehen per Maus oder Finger). Mit der Maus geht der ganze Kopf.
   return html`<section class=${'tile colored ' + cls} style=${`--tc:${color}`}>
-    <h2>${title}<label class="tile-color" title="Farbe der Kachel ändern">
+    <h2><span class="tile-grip-h" title="Ziehen, um die Kachel zu verschieben" aria-hidden="true">⠿</span>${title}<label class="tile-color" title="Farbe der Kachel ändern">
       <input type="color" value=${toHex(color)} onInput=${(e) => pick(e.target.value)} aria-label="Farbe der Kachel" /></label></h2>
     ${children}
   </section>`;
@@ -1794,6 +1795,8 @@ function Overview() {
   let reihe = lay.reihe.filter(avail);
   // Ohne eigene Anordnung rückt am Handy wie bisher die Wiedervorlagen nach oben, sobald dort etwas ansteht
   if (isMobile && !lay.eigen && !arrange && (f.due.length || f.answered.length)) reihe = ['wiedervorlagen', ...reihe.filter((x) => x !== 'wiedervorlagen')];
+  // Für pdDrop: Reihenfolge, wie sie gerade zu sehen ist, sonst landet eine Kachel am Handy an der falschen Stelle
+  if (isMobile && !lay.eigen) lay.reihe = [...reihe, ...lay.reihe.filter((x) => !reihe.includes(x))];
   const isLeft = (id) => lay.breit.includes(id);
   const left = reihe.filter(isLeft);
   const right = reihe.filter((x) => !isLeft(x));
@@ -1880,7 +1883,76 @@ function Overview() {
           <a class="btn link sm" href="#/meetings">Alle Meetings</a>
         <//>`,
   };
-  const slot = (id) => html`<div class="tile-slot" key=${id}>${tiles[id]()}</div>`;
+  // Direkt ziehen (Wunsch 08.11.2026): ohne „Anordnen“ eine Kachel am Kopf packen und woanders ablegen.
+  // Pointer-Ereignisse statt HTML-Drag, damit es auch am Handy geht: dort am Griff ⠿, mit der Maus am ganzen Kopf.
+  // Die gezogene Kachel folgt dem Zeiger, ein Strich zeigt, wo sie landet. Am Rand scrollt die Seite mit.
+  const [pd, setPd] = useState(null);
+  const pdRef = useRef(null);
+  function pdOver(x, y, self) {
+    const els = document.elementsFromPoint(x, y);
+    const slotEl = els.map((el) => el.closest?.('.tile-slot')).find((s) => s && s !== self);
+    if (slotEl) {
+      const r = slotEl.getBoundingClientRect();
+      return { id: slotEl.dataset.id, after: y > r.top + r.height / 2 };
+    }
+    const col = els.map((el) => el.closest?.('[data-col]')).find(Boolean);
+    return col ? { col: col.dataset.col } : null;
+  }
+  function pdDrop(id, to) {
+    if (!to || to.id === id) return;
+    const r = lay.reihe.filter((x) => x !== id);
+    let toLeft;
+    if (to.id) {
+      r.splice(r.indexOf(to.id) + (to.after ? 1 : 0), 0, id);
+      toLeft = isLeft(to.id);
+    } else {
+      toLeft = to.col === 'links';
+      const inCol = r.filter((x) => avail(x) && isLeft(x) === toLeft);
+      const last = inCol[inCol.length - 1];
+      r.splice(last ? r.indexOf(last) + 1 : r.length, 0, id);
+    }
+    const breit = isMobile ? lay.breit : toLeft ? [...new Set([...lay.breit, id])] : lay.breit.filter((x) => x !== id);
+    save({ reihe: r, breit });
+  }
+  const slotProps = (id) => ({
+    'data-id': id,
+    onPointerDown: (e) => {
+      if (e.button !== 0 || !e.target.closest('.tile > h2') || e.target.closest('input, button, a, label')) return;
+      if (e.pointerType !== 'mouse' && !e.target.closest('.tile-grip-h')) return;
+      pdRef.current = { id, x: e.clientX, y: e.clientY, sy: scrollY, pid: e.pointerId, el: e.currentTarget, moved: false, to: null };
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ohne Capture geht es trotzdem, solange der Zeiger auf der Kachel bleibt */ }
+    },
+    onPointerMove: (e) => {
+      const s = pdRef.current;
+      if (!s || e.pointerId !== s.pid) return;
+      if (!s.moved && Math.hypot(e.clientX - s.x, e.clientY - s.y) < 6) return;
+      e.preventDefault();
+      if (e.clientY < 70) scrollBy(0, -14);
+      else if (e.clientY > innerHeight - 70) scrollBy(0, 14);
+      s.el.style.transform = `translate(${e.clientX - s.x}px, ${e.clientY - s.y + scrollY - s.sy}px)`;
+      s.to = pdOver(e.clientX, e.clientY, s.el);
+      const key = s.to ? (s.to.id ? `${s.to.id}:${s.to.after}` : `:${s.to.col}`) : '';
+      if (!s.moved || key !== s.key) { s.moved = true; s.key = key; setPd({ id, to: s.to }); }
+    },
+    onPointerUp: (e) => {
+      const s = pdRef.current;
+      if (!s || e.pointerId !== s.pid) return;
+      pdRef.current = null;
+      s.el.style.transform = '';
+      if (s.moved) { pdDrop(s.id, s.to); setPd(null); }
+    },
+    onPointerCancel: () => {
+      const s = pdRef.current;
+      pdRef.current = null;
+      if (s) s.el.style.transform = '';
+      setPd(null);
+    },
+  });
+  const slot = (id) => html`<div key=${id} ...${slotProps(id)}
+      class=${'tile-slot' + (pd?.id === id ? ' lifting' : '') + (pd?.to?.id === id ? (pd.to.after ? ' over-after' : ' over-before') : '')}>${tiles[id]()}</div>`;
+  // Beim Ziehen zeigt sich auch eine leere Spalte, damit man hineinziehen kann
+  const colBox = (list, name) => html`<div class=${'tile-col' + (pd?.to?.col === name ? ' over-end' : '')} data-col=${name}>
+    ${list.map(slot)}${pd && html`<div class="tile-drop-end">${list.length ? '' : 'Hierher ziehen'}</div>`}</div>`;
 
   return html`<div class="page overview">
     <div class="page-head"><h1>Übersicht</h1><span class="muted">${today}</span>
@@ -1892,17 +1964,18 @@ function Overview() {
     </div>
     ${arrange && html`<p class="muted small arrange-hint">${isMobile
     ? 'Mit den Pfeilen nach oben oder unten verschieben.'
-    : 'Kacheln ziehen oder mit den Pfeilen verschieben, ← und → wechseln die Spalte.'} Die Anordnung gilt auf allen deinen Geräten.</p>`}
+    : 'Kacheln ziehen oder mit den Pfeilen verschieben, ← und → wechseln die Spalte.'} Die Anordnung gilt auf allen deinen Geräten.
+      Ohne „Anordnen“ geht es auch direkt: Kachel am Griff ⠿ links im Kopf packen und ziehen.</p>`}
     ${arrange
     ? (isMobile ? html`<div class="tiles arranging">${reihe.map(ghost)}</div>`
       : html`<div class="tiles arranging">
           <div class="tile-col">${left.map(ghost)}${dropEnd(true)}</div>
           <div class="tile-col">${right.map(ghost)}${dropEnd(false)}</div>
         </div>`)
-    : isMobile ? html`<div class="tiles">${reihe.map(slot)}</div>`
-      : html`<div class=${'tiles' + (!left.length || !right.length ? ' one' : '')}>
-          ${left.length > 0 && html`<div class="tile-col">${left.map(slot)}</div>`}
-          ${right.length > 0 && html`<div class="tile-col">${right.map(slot)}</div>`}
+    : isMobile ? html`<div class=${'tiles' + (pd ? ' dragging' : '')}>${reihe.map(slot)}</div>`
+      : html`<div class=${'tiles' + (pd ? ' dragging' : '') + (!pd && (!left.length || !right.length) ? ' one' : '')}>
+          ${(left.length > 0 || pd) && colBox(left, 'links')}
+          ${(right.length > 0 || pd) && colBox(right, 'rechts')}
         </div>`}
   </div>`;
 }

@@ -686,6 +686,24 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .tile-moves .icon-btn:disabled { opacity: 0.3; cursor: default; }
 .tile-drop { min-height: 40px; flex: 1; display: flex; align-items: center; justify-content: center; border-radius: 12px; color: var(--muted); font-size: 12.5px; }
 .tile-drop.over { background: var(--accent-soft); color: var(--text); }
+/* Direkt ziehen in der normalen Ansicht: Griff im Kopf, gezogene Kachel schwebt, Strich zeigt die Stelle */
+.tile-grip-h {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 24px; margin: -4px 0 -4px -6px;
+  color: var(--muted); font-size: 15px; line-height: 1; cursor: grab; opacity: 0.45; touch-action: none; user-select: none; flex: none;
+}
+.tile > h2:hover .tile-grip-h { opacity: 1; }
+@media (hover: hover) and (pointer: fine) { .tile > h2 { cursor: grab; user-select: none; } .tile > h2 .tile-color { cursor: pointer; } }
+.tile-slot { position: relative; }
+.tile-slot.lifting { z-index: 40; }
+.tile-slot.lifting > .tile { box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); opacity: 0.92; }
+.tile-slot.over-before::before, .tile-slot.over-after::after {
+  content: ''; position: absolute; left: 10px; right: 10px; height: 4px; border-radius: 2px; background: var(--accent); z-index: 5;
+}
+.tile-slot.over-before::before { top: -10px; }
+.tile-slot.over-after::after { bottom: -10px; }
+.tiles.dragging { user-select: none; }
+.tile-drop-end { min-height: 48px; flex: 1; display: flex; align-items: center; justify-content: center; border: 1px dashed transparent; border-radius: 14px; color: var(--muted); font-size: 13px; }
+.tile-col.over-end .tile-drop-end { border-color: var(--accent); background: var(--accent-soft); }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 18px; box-shadow: var(--shadow); }
 .tile h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; font-size: 16px; font-weight: 600; }
 .tile-main { border-top: 2px solid var(--gold); }
