@@ -45,8 +45,8 @@ export function demoSeed() {
   const ben = person('Ben Muster', handel, { phones: ['+49 89 0000002'], labels: ['Kunde'] });
   const clara = person('Clara Probe', kanzlei, { emails: ['clara@example.com'] });
   const david = person('David Test', partner, { emails: ['d.test@example.net'], phones: ['+49 170 0000004'], updated_at: ago(1) });
-  const eva = person('Eva Probst', null, { labels: ['Interessent'], ankauf_km: 50, ankaufsprofil_url: 'https://example.org/profil/eva', phones: ['+49 160 0000005'] });
-  const frank = person('Frank Platzhalter', null, { labels: ['Interessent'], ankauf_km: 30, updated_at: ago(12) });
+  const eva = person('Eva Probst', null, { labels: ['Interessent'], phones: ['+49 160 0000005'] });
+  const frank = person('Frank Platzhalter', null, { labels: ['Interessent'], updated_at: ago(12) });
 
   const inDays = (n) => {
     const d = new Date(Date.now() + n * 864e5);

@@ -4621,7 +4621,7 @@ function PersonPage({ person: p }) {
   if (!p) return html`<${NotFound} what="Kontakt" href="#/kontakte" />`;
   const org = idx.org.get(p.org_id);
   const pcards = cards.filter((c) => c.person_id === p.id);
-  const hasProfile = p.ankauf_km != null || p.ankaufsprofil_url;
+  // Ankaufsprofil gibt es seit 08.11.2026 nicht mehr als Feld, die Angaben stehen als Notiz am Kontakt (31_ankaufsprofil_als_notiz.sql)
   const sug = suggestionsFor(p, idx);
   // Übernehmen setzt nur dieses Label, ein leerer Vorschlag gilt als erledigt
   const takeLabel = (l) => actions.save('persons', { id: p.id, labels: [...p.labels, l], label_vorschlag: sug.filter((x) => x !== l) }).catch(() => {});
@@ -4656,10 +4656,6 @@ function PersonPage({ person: p }) {
         <${CardsPanel} cards=${pcards} newHref=${`#/karte/neu?kontakt=${p.id}`} />
         <${EventsPanel} personIds=${[p.id]} />
         <${MeetingsPanel} ids=${idx.meetingsOf.get(p.id) || []} />
-        ${hasProfile && html`<section class="panel"><h3>Ankaufsprofil</h3><dl class="kv">
-          ${p.ankauf_km != null && html`<dt>Entfernung</dt><dd>${Number(p.ankauf_km).toLocaleString('de-DE')} km</dd>`}
-          ${p.ankaufsprofil_url && html`<dt>Profil</dt><dd><a href=${safeUrl(p.ankaufsprofil_url)} target="_blank" rel="noopener">Öffnen</a></dd>`}
-        </dl></section>`}
         <p class="meta">Angelegt ${fullDate(p.created_at)}</p>
       </div>
       <div class="detail-main">
@@ -4939,8 +4935,6 @@ function PersonForm({ person }) {
     phones: person?.phones?.length ? [...person.phones] : [''],
     emails: person?.emails?.length ? [...person.emails] : [''],
     labels: [...(person?.labels || [])],
-    ankauf_km: person?.ankauf_km ?? '',
-    ankaufsprofil_url: person?.ankaufsprofil_url || '',
   }));
   const [busy, setBusy] = useState(false);
   const nameRef = useRef(null);
@@ -4953,15 +4947,12 @@ function PersonForm({ person }) {
     e.preventDefault();
     if (!f.name.trim()) return;
     setBusy(true);
-    const km = String(f.ankauf_km).trim().replace(',', '.');
     const row = {
       name: f.name.trim(),
       org_id: f.org_id,
       phones: cleanList(f.phones),
       emails: cleanList(f.emails),
       labels: f.labels,
-      ankauf_km: km === '' || Number.isNaN(Number(km)) ? null : Number(km),
-      ankaufsprofil_url: f.ankaufsprofil_url.trim() || null,
     };
     try {
       const saved = await actions.save('persons', person ? { id: person.id, ...row } : row);
@@ -4987,15 +4978,6 @@ function PersonForm({ person }) {
       <${MultiField} label="Telefon" type="tel" values=${f.phones} onChange=${(v) => set('phones', v)} />
       <${MultiField} label="E-Mail" type="email" values=${f.emails} onChange=${(v) => set('emails', v)} />
       <div class="field"><span>Labels</span><${LabelPicker} all=${allLabels} value=${f.labels} onChange=${(v) => set('labels', v)} /></div>
-      <details class="more" open=${f.ankauf_km !== '' || !!f.ankaufsprofil_url}>
-        <summary>Ankaufsprofil</summary>
-        <div class="field-row">
-          <label class="field"><span>Entfernung (km)</span>
-            <input inputmode="decimal" value=${f.ankauf_km} onInput=${(e) => set('ankauf_km', e.target.value)} /></label>
-          <label class="field grow"><span>Link zum Ankaufsprofil</span>
-            <input type="url" value=${f.ankaufsprofil_url} onInput=${(e) => set('ankaufsprofil_url', e.target.value)} /></label>
-        </div>
-      </details>
       <div class="form-actions">
         <button class="btn primary" disabled=${busy || !f.name.trim()}>${person ? 'Speichern' : 'Anlegen'}</button>
         <button type="button" class="btn ghost" onClick=${close}>Abbrechen</button>
