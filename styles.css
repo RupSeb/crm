@@ -914,6 +914,17 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .row:last-child { border-bottom: 0; }
 .row:hover { background: var(--surface-2); }
 .row.compact { padding: 7px 4px; border-bottom: 0; border-radius: 8px; }
+/* Zeile mit Telefon-Symbol rechts: die Zeile öffnet den Kontakt, das Symbol wählt (Wunsch 08.11.2026) */
+.row-wrap { display: flex; align-items: center; border-bottom: 1px solid var(--border); }
+.row-wrap:last-child { border-bottom: 0; }
+.row-wrap > .row { flex: 1; min-width: 0; border-bottom: 0; }
+.row-wrap.compact { border-bottom: 0; }
+.row-call { flex: none; width: 40px; height: 40px; margin-right: 8px; color: var(--ok); }
+.row-call .ico { width: 18px; height: 18px; }
+.row-call:hover { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.row-wrap.compact .row-call { margin-right: 0; }
+.deal-contact-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.deal-contact-actions .btn .ico { width: 14px; height: 14px; }
 .row-main { flex: 1; min-width: 0; }
 .row-title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-sub { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1717,12 +1717,18 @@ function LabelPicker({ all, value, onChange }) {
   </div>`;
 }
 
+// Nummer zum Wählen: am Handy öffnet der Link direkt den Anruf
+const telHref = (ph) => 'tel:' + String(ph || '').replace(/[^\d+]/g, '');
+// Kleines Telefon-Symbol am Ende einer Zeile in Kontaktliste und Firma (Wunsch 08.11.2026)
+const RowCall = ({ phone, name }) => (phone ? html`<a class="icon-btn row-call" href=${telHref(phone)}
+  title=${`${name} anrufen: ${phone}`} aria-label=${`${name} anrufen`}><${Icon} n="phone" /></a>` : null);
+
 function ContactActions({ phones = [], emails = [], website }) {
   const kannSenden = useKannSenden();
   if (!phones.length && !emails.length && !website) return null;
   return html`<div class="contact-actions">
     ${phones.map((ph) => html`<span class="btn-group" key=${'t' + ph}>
-      <a class="btn" href=${'tel:' + ph.replace(/[^\d+]/g, '')}><${Icon} n="phone" />${ph}</a>
+      <a class="btn" href=${telHref(ph)}><${Icon} n="phone" />${ph}</a>
       <a class="btn" href=${'https://wa.me/' + waNumber(ph)} target="_blank" rel="noopener" title="WhatsApp" aria-label="WhatsApp"><${Icon} n="chat" /></a>
     </span>`)}
     ${emails.map((m) => html`<a class="btn" key=${'m' + m} href=${kannSenden ? `#/mail/neu?an=${encodeURIComponent(m)}` : 'mailto:' + m}><${Icon} n="mail" />${m}</a>`)}
@@ -2811,8 +2817,12 @@ function CardSheet({ id, query }) {
         <${Combobox} items=${persons} value=${form.person_id} onChange=${pickPerson} placeholder="Kontakt suchen oder neu anlegen"
           label=${(p) => p.name} sub=${(p) => idx.org.get(p.org_id)?.name} href=${(p) => `#/kontakt/${p.id}`}
           onCreate=${async (name) => (await actions.save('persons', { name })).id} />
-        ${kannSenden && card && person?.emails?.[0] && html`<a class="btn sm mail-write" href=${`#/mail/neu?an=${encodeURIComponent(person.emails[0])}`}
-          onClick=${(e) => { if (dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) e.preventDefault(); }}><${Icon} n="mail" />Mail schreiben</a>`}</div>
+        ${person && (person.phones?.length > 0 || (kannSenden && card && person.emails?.[0])) && html`<div class="deal-contact-actions">
+          ${(person.phones || []).slice(0, 2).map((ph) => html`<a key=${ph} class="btn sm" href=${telHref(ph)} title=${`${person.name} anrufen`}>
+            <${Icon} n="phone" />${person.phones.length > 1 ? ph : 'Anrufen'}</a>`)}
+          ${kannSenden && card && person.emails?.[0] && html`<a class="btn sm" href=${`#/mail/neu?an=${encodeURIComponent(person.emails[0])}`}
+            onClick=${(e) => { if (dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) e.preventDefault(); }}><${Icon} n="mail" />Mail schreiben</a>`}
+        </div>`}</div>
       <div class="field"><span>Firma</span>
         <${Combobox} items=${organizations} value=${form.org_id} onChange=${(v) => set('org_id', v)} placeholder="Firma suchen oder neu anlegen"
           label=${(o) => o.name} href=${(o) => `#/firma/${o.id}`}
@@ -4608,12 +4618,13 @@ function PersonRow({ person }) {
   const org = idx.org.get(person.org_id);
   const sub = [org?.name, person.phones[0] || person.emails[0]].filter(Boolean).join(' · ');
   const chips = [...person.labels.map((l) => [l, false]), ...suggestionsFor(person, idx).map((l) => [l, true])].slice(0, 2);
-  return html`<a class="row" href=${`#/kontakt/${person.id}`}>
+  // Telefon-Symbol rechts wählt direkt, die Zeile selbst öffnet den Kontakt
+  return html`<div class="row-wrap"><a class="row" href=${`#/kontakt/${person.id}`}>
     <${Avatar} name=${person.name} />
     <div class="row-main"><div class="row-title">${person.name}</div>${sub && html`<div class="row-sub">${sub}</div>`}</div>
     ${chips.length > 0 && html`<div class="row-labels">${chips.map(([l, s]) => html`<span class=${'chip' + (s ? ' dashed' : '')}
       key=${l} title=${s ? 'Vorschlag, noch nicht übernommen' : null}>${l}${s ? '?' : ''}</span>`)}</div>`}
-  </a>`;
+  </a><${RowCall} phone=${person.phones[0]} name=${person.name} /></div>`;
 }
 
 function PersonPage({ person: p }) {
@@ -5059,9 +5070,10 @@ function OrgPage({ org: o }) {
         <section class="panel">
           <h3>Kontakte <span class="count">${people.length}</span>
             <a class="icon-btn" href="#/kontakte/neu" title="Kontakt anlegen" aria-label="Kontakt anlegen"><${Icon} n="plus" /></a></h3>
-          ${people.map((p) => html`<a key=${p.id} class="row compact" href=${`#/kontakt/${p.id}`}>
+          ${people.map((p) => html`<div key=${p.id} class="row-wrap compact"><a class="row compact" href=${`#/kontakt/${p.id}`}>
             <${Avatar} name=${p.name} /><div class="row-main"><div class="row-title">${p.name}</div>
-            ${(p.phones[0] || p.emails[0]) && html`<div class="row-sub">${p.phones[0] || p.emails[0]}</div>`}</div></a>`)}
+            ${(p.phones[0] || p.emails[0]) && html`<div class="row-sub">${p.phones[0] || p.emails[0]}</div>`}</div></a>
+            <${RowCall} phone=${p.phones[0]} name=${p.name} /></div>`)}
           ${people.length === 0 && html`<p class="muted small">Keine Kontakte.</p>`}
         </section>
         <${AktivitaetenPanel} mitDeal neu=${{ org_id: o.id }}
