@@ -1303,3 +1303,14 @@ details.more[open] summary { margin-bottom: 12px; }
 }
 /* Seit Sales sind es acht Reiter unten, auf schmalen Handys etwas kleiner, damit Übersicht nicht an den Nachbarn stößt */
 @media (max-width: 390px) { .tabbar a { font-size: 10px; letter-spacing: -0.01em; } }
+
+/* ---------- Archiv (33_archiv_erledigte.sql, v67) ---------- */
+.archiv-link {
+  display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 4px; padding: 8px;
+  border: 1px dashed var(--border-strong); border-radius: 10px; color: var(--muted); font-size: 13px; text-decoration: none;
+}
+.archiv-link:hover { color: var(--text); border-color: var(--gold); }
+.archiv-link .ico { width: 15px; height: 15px; }
+.archiv-hint { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 13px; color: var(--gold-l); }
+.archiv-hint .ico { width: 14px; height: 14px; }
+.archiv-row .badges { flex: none; }

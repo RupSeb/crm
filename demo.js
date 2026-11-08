@@ -78,6 +78,10 @@ export function demoSeed() {
   card('Rechnungen einfordern', 'Allgemein', 'To-Dos', null, 5, { priority: 'niedrig' });
   const wartung = card('Wartungsvertrag Beispiel Handel', 'Vertrieb', 'Erledigt', ben, 12);
   const ausschreibung = card('Ausschreibung Kanzlei Beispiel', 'Vertrieb', 'Erledigt', clara, 28);
+  // Archiv (33_archiv_erledigte.sql): länger als 30 Tage erledigt, nur noch über Suche und Archiv zu finden
+  card('Angebot Altkunde Beispiel Handel', 'Vertrieb', 'Erledigt', ben, 45, { archived: true });
+  card('Messe Musterstadt 2025 nachbereiten', 'Vertrieb', 'Erledigt', null, 80, { archived: true });
+  card('Unterlagen für die Bank geschickt', 'Objekte', 'Erledigt', eva, 60, { archived: true });
 
   const note = (content, ref, days, extra = {}) => {
     s.notes.push({

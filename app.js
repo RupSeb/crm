@@ -271,6 +271,7 @@ const ICONS = {
   lines: '<path d="M4 6.5h16M4 12h16M4 17.5h10"/>',
   pin: '<path d="M12 21.5s7-6.4 7-11.5a7 7 0 10-14 0c0 5.1 7 11.5 7 11.5z"/><circle cx="12" cy="10" r="2.5"/>',
   more: '<circle cx="12" cy="5.5" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="12" cy="18.5" r=".9"/>',
+  archiv: '<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 001.5 1.5h11a1.5 1.5 0 001.5-1.5v-10M10 12.5h4"/>',
   sales: '<path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5 6-6.5"/><path d="M15 8h4v4"/>',
 };
 function Icon({ n }) {
@@ -962,9 +963,9 @@ function Main({ session }) {
   const me = (session?.user?.email || '').toLowerCase();
   const isGuest = data.role === 'gast';
   const ctx = { ...data, idx, actions, isMobile, session, me, isGuest };
-  const renderPage = ([s, id]) => {
+  const renderPage = ([s, id, sub]) => {
     switch (s) {
-      case 'board': return html`<${Board} projectId=${id} />`;
+      case 'board': return html`<${Board} projectId=${id} archiv=${sub === 'archiv'} />`;
       case 'sales': return html`<${SalesPage} projectId=${id} />`;
       case 'meetings': return html`<${MeetingsList} projectId=${id} />`;
       case 'postfach': return html`<${MailboxPage} />`;
@@ -1064,17 +1065,22 @@ function Main({ session }) {
 // ---------------------------------------------------------------------------
 // Schließt nur über den Zurück-Pfeil oder Escape, nicht per Klick daneben, damit nichts Angefangenes verloren geht.
 // „action“ steht oben rechts im Kopf (z. B. Speichern).
+// Offene Fenster übereinander (z. B. ein Deal über dem Archiv): Escape schließt nur das oberste.
+const sheetStack = [];
 function Sheet({ title, onClose, action, children }) {
   // Escape soll immer das aktuelle onClose nehmen, nicht das vom ersten Anzeigen
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') closeRef.current(); };
+    const me = {};
+    sheetStack.push(me);
+    const onKey = (e) => { if (e.key === 'Escape' && sheetStack.at(-1) === me) closeRef.current(); };
     addEventListener('keydown', onKey);
     document.body.classList.add('noscroll');
     return () => {
       removeEventListener('keydown', onKey);
-      document.body.classList.remove('noscroll');
+      sheetStack.splice(sheetStack.indexOf(me), 1);
+      if (!sheetStack.length) document.body.classList.remove('noscroll');
     };
   }, []);
   return html`<div class="overlay">
@@ -2367,7 +2373,7 @@ function ColMenu({ stage, canLeft, canRight, label, onRename, onMove, onAdd, onD
   </div>`;
 }
 
-function Board({ projectId }) {
+function Board({ projectId, archiv = false }) {
   const { projects, stages, cards, idx, isMobile, isGuest, actions, session } = useApp();
   const [q, setQ] = useState('');
   const [labelPick, setLabel] = useStored('crm-l-board', '');
@@ -2417,6 +2423,15 @@ function Board({ projectId }) {
   const byStage = new Map(cols.map((s) => [s.id, []]));
   visible.forEach((c) => byStage.get(c.stage_id)?.push(c));
   byStage.forEach((l) => l.sort(byUpdatedDesc));
+  // Archiv (33_archiv_erledigte.sql): nach 30 Tagen in „Erledigt“ archiviert die Datenbank selbst.
+  // Unter „Erledigt“ führt ein Link ins Archiv, die Suche auf dem Board zeigt Treffer dort mit an.
+  const archivCards = cards.filter((c) => c.project_id === project.id && c.archived);
+  const archivHits = q ? archivCards.filter((c) => matches(q, c.title, idx.person.get(c.person_id)?.name || '',
+    idx.org.get(c.org_id)?.name || '', c.labels || [])).length : 0;
+  const archivHref = `#/board/${project.id}/archiv${q ? `?q=${encodeURIComponent(q)}` : ''}`;
+  const archivLink = (s) => s.is_done && archivCards.length > 0 && html`<a class="archiv-link" href=${archivHref}>
+    <${Icon} n="archiv" />Archiv: ${archivCards.length} ${archivCards.length === 1 ? 'älterer Deal' : 'ältere Deals'}</a>`;
+  const archivSheet = archiv && html`<${ArchivSheet} project=${project} list=${archivCards} />`;
 
   const move = (cardId, stageId) => {
     const c = idx.card.get(cardId);
@@ -2555,8 +2570,11 @@ function Board({ projectId }) {
         onDragStart=${() => setDragId(c.id)} onDragEnd=${() => { setDragId(null); setOver(null); }} />`)}
       ${list.length > limit && html`<button class="btn ghost sm full" onClick=${() => setShowAll({ ...showAll, [s.id]: true })}>
         Alle ${list.length} anzeigen</button>`}
-      ${list.length === 0 && html`<div class="col-empty">${q ? 'Keine Treffer' : 'Keine Aufgaben'}</div>`}`;
+      ${list.length === 0 && html`<div class="col-empty">${q ? 'Keine Treffer' : 'Keine Aufgaben'}</div>`}
+      ${archivLink(s)}`;
   };
+  const archivHint = archivHits > 0 && html`<a class="archiv-hint" href=${archivHref}><${Icon} n="search" />
+    ${archivHits === 1 ? '1 weiterer Treffer' : `${archivHits} weitere Treffer`} im Archiv</a>`;
 
   if (isMobile) {
     const active = cols.find((s) => s.id === mobileStage) || cols[0];
@@ -2566,6 +2584,7 @@ function Board({ projectId }) {
       ${search}
       ${share}
       ${labelFilter}
+      ${archivHint}
       <div class="stage-tabs">
         ${cols.map((s) => html`<button key=${s.id} class=${'stab' + (s.id === active.id ? ' on' : '')}
           onClick=${() => (s.id === active.id && editCols ? startRename(s) : setMobileStage(s.id))}
@@ -2579,12 +2598,14 @@ function Board({ projectId }) {
       <div class="mobile-list">${cardList(active, byStage.get(active.id))}</div>
       <${Fab} href=${newHref(active)} label="Neue Aufgabe" />
       ${removeSheet}
+      ${archivSheet}
     </div>`;
   }
 
   return html`<div class="board-page">
     <div class="board-head">${projectTabs}${search}${share}</div>
     ${labelFilter}
+    ${archivHint}
     <div class="board" style=${`--cols:${cols.length + (adding ? 1 : 0)}`} onDragOver=${edgeScroll}>
       ${adding && adding.afterId === null && html`<section class="column col-new">${addForm}</section>`}
       ${cols.map((s) => html`<section key=${s.id} class=${'column' + (over === s.id ? ' over' : '')}
@@ -2605,7 +2626,44 @@ function Board({ projectId }) {
         <${Icon} n="plus" />Spalte</button>`}
     </div>
     ${removeSheet}
+    ${archivSheet}
   </div>`;
+}
+
+// Archiv eines Projekts: archivierte Deals mit Suche, die jüngsten zuerst, nach Monat gruppiert.
+// Ein Deal öffnet sich darüber, „Wiederherstellen“ dort holt ihn aufs Board zurück.
+function ArchivSheet({ project, list }) {
+  const { idx } = useApp();
+  const route = useRoute();
+  const [q, setQ] = useState(() => route.query.get('q') || '');
+  const [limit, setLimit] = useState(60);
+  const hits = list.filter((c) => matches(q, c.title, idx.person.get(c.person_id)?.name || '', idx.org.get(c.org_id)?.name || '', c.labels || []))
+    .sort(byUpdatedDesc);
+  const rows = [];
+  let month = '';
+  hits.slice(0, limit).forEach((c) => {
+    const label = monthLabel(c.updated_at);
+    if (label !== month) {
+      rows.push(html`<div class="month-head" key=${'h' + label}>${label}</div>`);
+      month = label;
+    }
+    const st = idx.stage.get(c.stage_id);
+    const wer = [idx.person.get(c.person_id)?.name, idx.org.get(c.org_id)?.name].filter(Boolean).join(' · ');
+    rows.push(html`<a key=${c.id} class="row archiv-row" href=${`#/karte/${c.id}`}>
+      <div class="row-main"><div class="row-title">${c.title}</div>
+        <div class="row-sub">${[st && !st.is_done ? st.name : '', wer, `zuletzt ${shortDate(c.updated_at)}`].filter(Boolean).join(' · ')}</div></div>
+      <${CardBadges} card=${c} noAnswer />
+    </a>`);
+  });
+  return html`<${Sheet} title=${`Archiv ${project.name}`} onClose=${() => back(`#/board/${project.id}`)}>
+    <p class="muted small">Was 30 Tage unverändert in „Erledigt“ liegt, kommt jede Nacht hierher. Die Suche oben in der Leiste findet diese Deals auch.</p>
+    <div class="toolbar"><${SearchBox} value=${q} onInput=${setQ} placeholder="Archiv durchsuchen" /></div>
+    <div class="list">
+      ${rows}
+      ${hits.length > limit && html`<button class="btn ghost full" onClick=${() => setLimit(limit + 100)}>Weitere anzeigen</button>`}
+      ${hits.length === 0 && html`<p class="muted pad">${q ? 'Keine Treffer im Archiv.' : 'Das Archiv ist leer.'}</p>`}
+    </div>
+  <//>`;
 }
 
 // Ganze Projekte lassen sich nicht teilen, nur einzelne Deals (in der Karte unter „Teilen“).
@@ -3040,7 +3098,8 @@ function CardSheet({ id, query }) {
     <div class="drop-zone" ...${dropProps}>
     ${dropping && html`<div class="drop-hint"><${Icon} n="clip" />Dateien hier ablegen, sie hängen dann an „${card.title}“</div>`}
     <form class="form" onSubmit=${submit}>
-      ${card?.archived && html`<div class="notice">Diese Aufgabe ist archiviert und erscheint nicht auf dem Board.</div>`}
+      ${card?.archived && html`<div class="notice">Diese Aufgabe ist archiviert und erscheint nicht auf dem Board. Du findest sie über die Suche oben
+        und im Archiv des Projekts unter „Erledigt“. „Wiederherstellen“ unten holt sie zurück.</div>`}
       ${answer && html`<div class="notice answer-notice">
         <strong>Antwort da:</strong> ${answer.from_name || answer.from_email} hat ${relDate(answer.sent_at).replace(/^\d/, 'am $&')} geschrieben,
         „${answer.subject || 'ohne Betreff'}“. Der Hinweis verschwindet, sobald du die Aufgabe änderst, eine Notiz schreibst oder antwortest.
