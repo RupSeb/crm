@@ -518,6 +518,9 @@ function Main({ session }) {
   const [loadError, setLoadError] = useState(null);
   const [toast, setToast] = useState(null);
   const lastParts = useRef(null);
+  // Aktueller Stand für Aktionen, die nicht bei jeder Änderung neu entstehen
+  const dataRef = useRef(null);
+  dataRef.current = data;
 
   const fail = useCallback((e) => { console.error(e); setToast({ text: friendly(e) }); }, []);
   useEffect(() => {
@@ -529,7 +532,7 @@ function Main({ session }) {
   const load = useCallback(async () => {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
-        card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude, antworten, postfach_neu] = await Promise.all([
+        card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude, antworten, postfach_neu, einstellungen] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -545,6 +548,7 @@ function Main({ session }) {
         db.rpc('claude_status').catch(() => null),
         db.rpc('antworten_offen').catch(() => []),
         db.rpc('postfach_neu').catch(() => 0),
+        db.list('nutzer_einstellungen').catch(() => []),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
@@ -555,7 +559,7 @@ function Main({ session }) {
       const cards = role === 'gast' ? allCards.filter((c) => mine.has(c.id) || myProjects.has(c.project_id)) : allCards;
       setData({ projects, stages, organizations, persons, cards, meetings, meeting_persons, events, event_persons,
         card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [], claude,
-        antworten: antworten || [], postfach_neu: postfach_neu || 0 });
+        antworten: antworten || [], postfach_neu: postfach_neu || 0, einstellungen: einstellungen?.[0]?.werte || {} });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -601,6 +605,13 @@ function Main({ session }) {
       refreshCounts,
       // Postfach geöffnet: Zahl in der Navigation sofort auf null
       setPostfachNeu(n) { setData((d) => d && { ...d, postfach_neu: n }); },
+      // Einstellungen je Person, auf allen Geräten gleich (28_nutzer_einstellungen.sql). patch wird eingemischt.
+      async saveEinstellungen(patch) {
+        const me = (session?.user?.email || '').toLowerCase();
+        const werte = { ...dataRef.current?.einstellungen, ...patch };
+        setData((d) => ({ ...d, einstellungen: werte }));
+        try { await db.upsert('nutzer_einstellungen', { owner: me, werte }, 'owner'); } catch (e) { fail(e); load(); throw e; }
+      },
       // Kurze Meldung unten, optional mit „Rückgängig“
       notify(text, undo) { setToast({ text, undo }); },
       async save(table, row) {
@@ -784,8 +795,8 @@ function Main({ session }) {
     if (!data || !idx || data.role === 'gast') return { n: 0, title: '' };
     const f = followUpOf(myOpen(data.cards, (session?.user?.email || '').toLowerCase()), idx);
     const title = [f.answered.length && `${f.answered.length} ${f.answered.length === 1 ? 'Antwort' : 'Antworten'} da`,
-      f.due.length && `${f.due.length} fällig`].filter(Boolean).join(', ');
-    return { n: f.answered.length + f.due.length, title };
+      f.dueAll.length && `${f.dueAll.length} fällig`].filter(Boolean).join(', ');
+    return { n: f.answered.length + f.dueAll.length, title };
   }, [data, idx]);
   useEffect(() => {
     if (!data) return;
@@ -1103,8 +1114,46 @@ function PushSettings() {
   </div>`;
 }
 
+// Terminlink für den Knopf im Mailfenster: ein Standard-Link, auf Wunsch ein eigener je Postfach, und der Satz davor
+function TerminLinkSettings() {
+  const { einstellungen, actions } = useApp();
+  const konten = useGoogleKonten().filter((k) => k.darf_senden);
+  const [link, setLink] = useState(einstellungen.terminlink || '');
+  const [satz, setSatz] = useState(einstellungen.terminsatz ?? TERMIN_SATZ);
+  const [je, setJe] = useState(einstellungen.terminlinks || {});
+  const [busy, setBusy] = useState(false);
+  const gleich = link === (einstellungen.terminlink || '') && satz === (einstellungen.terminsatz ?? TERMIN_SATZ)
+    && JSON.stringify(je) === JSON.stringify(einstellungen.terminlinks || {});
+  async function save() {
+    const std = alsLink(link);
+    const eigene = Object.fromEntries(Object.entries(je).map(([k, v]) => [k, alsLink(v)]).filter(([, v]) => v));
+    const falsch = [std, ...Object.values(eigene)].find((v) => v && !istLink(v));
+    if (falsch) { actions.fail(new Error(`Das sieht nicht wie ein Link aus: ${falsch}`)); return; }
+    setBusy(true);
+    try {
+      await actions.saveEinstellungen({ terminlink: std, terminsatz: satz.trim(), terminlinks: eigene });
+      setLink(std);
+      setJe(eigene);
+      actions.notify('Terminlink gespeichert.');
+    } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
+  }
+  return html`<div class="field"><span>Terminlink</span>
+    <p class="muted small">Der Knopf „Terminlink“ im Mailfenster fügt Satz und Link dort ein, wo der Cursor steht. Zum Beispiel dein Calendly-Link. Gilt auf allen Geräten.</p>
+    <input type="url" inputmode="url" placeholder="https://calendly.com/dein-name/30min" value=${link} onInput=${(e) => setLink(e.target.value)} aria-label="Terminlink" />
+    <input value=${satz} onInput=${(e) => setSatz(e.target.value)} placeholder="Ohne Satz, nur der Link" aria-label="Satz vor dem Link" />
+    <p class="muted small">Satz vor dem Link. Leer lassen, wenn nur der Link eingefügt werden soll.</p>
+    ${konten.length > 1 && html`<details class="more" open=${Object.keys(einstellungen.terminlinks || {}).length > 0}>
+      <summary>Je Postfach ein anderer Link</summary>
+      ${konten.map((k) => html`<label class="field" key=${k.address}><span>${k.address}</span>
+        <input type="url" inputmode="url" placeholder="wie oben" value=${je[k.address] || ''}
+          onInput=${(e) => setJe({ ...je, [k.address]: e.target.value })} /></label>`)}
+    </details>`}
+    <div class="form-actions"><button type="button" class="btn" disabled=${busy || gleich} onClick=${save}>${busy ? 'Speichert …' : 'Terminlink speichern'}</button></div>
+  </div>`;
+}
+
 function SettingsSheet({ onLogout }) {
-  const { session, actions, claude } = useApp();
+  const { session, actions, claude, isGuest } = useApp();
   const [theme, setTheme] = useState(ls.get('crm-theme') || '');
   const [ownTiles, setOwnTiles] = useState(() => Object.keys(tileColors()).length > 0);
   const [newFactor, setNewFactor] = useState(false);
@@ -1149,6 +1198,7 @@ function SettingsSheet({ onLogout }) {
       </div>
       <${PushSettings} />
       <${GoogleAccounts} />
+      ${!isGuest && html`<${TerminLinkSettings} />`}
       <div class="field"><span>Zwei-Faktor</span>
         ${newFactor ? html`
           <p class="muted small">Neuen Faktor einrichten. Bis du den ersten Code bestätigst, gilt der bisherige weiter.</p>
@@ -1503,6 +1553,10 @@ const FOLLOW_STEPS = [[3, '3 Tagen'], [7, '1 Woche'], [14, '2 Wochen']];
 const myOpen = (cards, me) => cards.filter((c) => !c.archived && (assigneesOf(c).length === 0 || assigneesOf(c).includes(me)));
 
 // Gruppen der Kachel „Wiedervorlagen“. „Antwort da“ steht vorn und taucht in den anderen Gruppen nicht noch einmal auf.
+// Seit 08.11.2026 nichts doppelt (Sebastians Wunsch): To-dos und Ongoing stehen nur unter „Zu erledigen“, auch mit Datum.
+// Die Wiedervorlagen sind das Nachhaken aus den übrigen Spalten (Feedback, Zukünftig, eigene). dueAll zählt für die Zahl
+// an „Übersicht“ und am App-Symbol trotzdem alles Fällige, auch To-dos.
+const isWorkList = (kind) => kind === 'todo' || kind === 'doing';
 function followUpOf(open, idx) {
   const today = todayStr();
   const soon = addDays(today, 7);
@@ -1512,11 +1566,13 @@ function followUpOf(open, idx) {
   const answered = active.filter((c) => idx.answerOf.has(c.id))
     .sort((a, b) => ts(idx.answerOf.get(b.id).sent_at) - ts(idx.answerOf.get(a.id).sent_at));
   const rest = active.filter((c) => !idx.answerOf.has(c.id));
-  const due = rest.filter((c) => c.due_date && c.due_date <= today).sort(byDue);
-  const next = rest.filter((c) => c.due_date && c.due_date > today && c.due_date <= soon).sort(byDue);
-  const waiting = rest.filter((c) => kind(c) === 'waiting' && !(c.due_date && c.due_date <= soon))
+  const dueAll = rest.filter((c) => c.due_date && c.due_date <= today);
+  const follow = rest.filter((c) => !isWorkList(kind(c)));
+  const due = follow.filter((c) => c.due_date && c.due_date <= today).sort(byDue);
+  const next = follow.filter((c) => c.due_date && c.due_date > today && c.due_date <= soon).sort(byDue);
+  const waiting = follow.filter((c) => kind(c) === 'waiting' && !(c.due_date && c.due_date <= soon))
     .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9') || ts(a.updated_at) - ts(b.updated_at));
-  return { answered, due, next, waiting };
+  return { answered, due, next, waiting, dueAll };
 }
 
 function FollowUpTile({ open }) {
@@ -1582,14 +1638,18 @@ function Overview() {
       <${Tile} id="todo" cls="tile-main" title=${html`Zu erledigen <span class="count">${todo.length}</span>`}>
         <${QuickAdd} />
         ${sections.map(([p, list]) => {
-    // Hoch und Mittel immer ganz, vom Rest bis mindestens 8 Zeilen, alles Weitere nach „Alle anzeigen“
+    // Hoch und Mittel immer ganz, vom Rest bis mindestens 8 Zeilen, alles Weitere nach „Alle anzeigen“.
+    // Was heute fällig oder überfällig ist, steht nie hinter „Alle anzeigen“, es kommt ja nicht mehr doppelt
+    // bei den Wiedervorlagen vor.
     const limit = Math.max(8, list.filter((c) => prioRank(c) < 2).length);
-    const shown = showAll[p.id] ? list : list.slice(0, limit);
+    const dueNow = (c) => c.due_date && c.due_date <= todayStr();
+    const collapsed = list.filter((c, i) => i < limit || dueNow(c));
+    const shown = showAll[p.id] ? list : collapsed;
     return html`<div class="todo-group" key=${p.id} style=${`--pc:${p.color}`}>
             <h3 class="group-project">${p.name} <span class="count">${list.length}</span></h3>
             ${shown.map((c) => html`<${TodoRow} key=${c.id} card=${c} noProject />`)}
-            ${list.length > limit && html`<button class="btn link sm" onClick=${() => setShowAll({ ...showAll, [p.id]: !showAll[p.id] })}>
-              ${showAll[p.id] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>`}
+            ${list.length > collapsed.length ? html`<button class="btn link sm" onClick=${() => setShowAll({ ...showAll, [p.id]: !showAll[p.id] })}>
+              ${showAll[p.id] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>` : null}
           </div>`;
   })}
         ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben eintippen.</p>`}
@@ -3833,8 +3893,21 @@ function RecipientInput({ label, value, onChange, autoFocus }) {
   </div></div>`;
 }
 
+// Terminlink (z. B. Calendly) aus den Einstellungen der Person, je Postfach ein eigener möglich.
+// Der Knopf im Mailfenster fügt Satz und Link an der Stelle des Cursors ein.
+const TERMIN_SATZ = 'Hier können Sie direkt einen Termin mit mir buchen:';
+const terminLinkFuer = (werte, von) => String(werte?.terminlinks?.[von] || werte?.terminlink || '').trim();
+const terminSatzVon = (werte) => String(werte?.terminsatz ?? TERMIN_SATZ).trim();
+const alsLink = (s) => { const v = String(s || '').trim(); return !v ? '' : /^https?:\/\//i.test(v) ? v : `https://${v}`; };
+const istLink = (s) => /^https?:\/\/[^\s/]+\.[^\s]+$/i.test(s);
+
 function MailSheet({ query }) {
-  const { actions, me } = useApp();
+  const { actions, me, einstellungen } = useApp();
+  const [linkFrage, setLinkFrage] = useState(false);
+  const [neuerLink, setNeuerLink] = useState('');
+  const linkRef = useRef(null);
+  // autofocus greift bei nachträglich eingeblendeten Feldern nicht, deshalb von Hand
+  useEffect(() => { if (linkFrage) linkRef.current?.focus(); }, [linkFrage]);
   const replyId = Number(query.get('antwort')) || null;
   const replyAll = query.get('alle') === '1';
   const [boxes, setBoxes] = useState(null);
@@ -3893,6 +3966,34 @@ function MailSheet({ query }) {
     setFiles([...files, ...neu]);
   }
 
+  // Terminlink an der Cursorstelle einfügen, danach steht der Cursor hinter dem Link
+  function terminEinfuegen(link) {
+    const el = textRef.current;
+    const a = el ? el.selectionStart ?? text.length : text.length;
+    const b = el ? el.selectionEnd ?? a : a;
+    const vor = text.slice(0, a);
+    const satz = terminSatzVon(einstellungen);
+    const teil = (vor && !/\s$/.test(vor) ? ' ' : '') + (satz ? `${satz} ` : '') + link;
+    setText(vor + teil + text.slice(b));
+    const pos = vor.length + teil.length;
+    requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(pos, pos); });
+  }
+  const terminLink = terminLinkFuer(einstellungen, von);
+  function terminKnopf() {
+    if (terminLink) terminEinfuegen(terminLink);
+    else setLinkFrage(true);
+  }
+  // Noch kein Link hinterlegt: einmal hier eintragen, gespeichert wird er für alle Geräte
+  async function terminLinkSpeichern() {
+    const link = alsLink(neuerLink);
+    if (!istLink(link)) { actions.fail(new Error('Das sieht nicht wie ein Link aus, etwa https://calendly.com/dein-name/30min')); return; }
+    try {
+      await actions.saveEinstellungen({ terminlink: link });
+      setLinkFrage(false);
+      terminEinfuegen(link);
+    } catch { /* Meldung kommt über fail */ }
+  }
+
   const zitatKopf = orig ? `Am ${fullDate(orig.sent_at)} schrieb ${orig.from_name ? `${orig.from_name} <${orig.from_email}>` : orig.from_email}:` : '';
   const aktiv = boxes?.find((b) => b.address === von);
   const leer = !adressTeile(an).length && !adressTeile(cc).length && !adressTeile(bcc).length;
@@ -3941,7 +4042,22 @@ function MailSheet({ query }) {
           <button type="button" class="chip-x" aria-label=${`${f.name} entfernen`} onClick=${() => setFiles(files.filter((_, j) => j !== i))}>×</button></span>`)}
         <label class="btn sm"><${Icon} n="clip" />Datei anhängen
           <input type="file" multiple hidden onChange=${(e) => { addFiles(e.target.files); e.target.value = ''; }} /></label>
+        <button type="button" class="btn sm" onClick=${terminKnopf}
+          title=${terminLink ? `Fügt deinen Terminlink ein: ${terminLink}` : 'Terminlink einmal hinterlegen, danach fügt der Knopf ihn ein'}>
+          <${Icon} n="calendar" />Terminlink</button>
       </div>
+      ${linkFrage && html`<div class="termin-frage">
+        <label class="field"><span>Dein Terminlink</span>
+          <input ref=${linkRef} type="url" inputmode="url" autocomplete="url" placeholder="https://calendly.com/dein-name/30min" value=${neuerLink}
+            onInput=${(e) => setNeuerLink(e.target.value)}
+            onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); terminLinkSpeichern(); } if (e.key === 'Escape') { e.stopPropagation(); setLinkFrage(false); } }} /></label>
+        <p class="muted small">Einmal eintragen, dann fügt der Knopf ihn mit dem Satz „${terminSatzVon(einstellungen) || 'ohne Satz'}“ ein.
+          Satz, Link und eigene Links je Postfach änderst du in den Einstellungen unter „Terminlink“. Gilt auf allen Geräten.</p>
+        <div class="form-actions">
+          <button type="button" class="btn primary sm" disabled=${!neuerLink.trim()} onClick=${terminLinkSpeichern}>Speichern und einfügen</button>
+          <button type="button" class="btn link sm" onClick=${() => setLinkFrage(false)}>Abbrechen</button>
+        </div>
+      </div>`}
       ${aktiv?.signatur ? html`<label class="check-line"><input type="checkbox" checked=${mitSignatur} onChange=${(e) => setMitSignatur(e.target.checked)} /> Signatur anhängen</label>
         ${mitSignatur && html`<div class="mail-text quote mail-preview">${aktiv.signatur}</div>`}`
     : html`<p class="muted small">Für dieses Postfach ist in Gmail keine Signatur hinterlegt.</p>`}

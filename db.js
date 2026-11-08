@@ -259,7 +259,7 @@ const remote = {
 const KEY = 'crm-demo-v6';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
-  'nachfass_aus', 'nutzer_gesehen'];
+  'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen'];
 // Zum Ausprobieren der Gast-Ansicht: ?demo&gast in der Adresse
 const DEMO_GUEST = new URLSearchParams(location.search).has('gast');
 const DEMO_USERS = [
