@@ -1464,25 +1464,52 @@ function useAllLabels() {
 }
 
 // Labels direkt auf der Seite vergeben und entfernen, ohne das Bearbeiten-Fenster.
-// „+ Label“ schlägt vorhandene Begriffe vor, jeder neue Begriff geht auch.
+// „+ Label“ öffnet eine Klappliste mit den vorhandenen Begriffen. Wer etwas Neues tippt, sieht darin
+// „+ „…“ als neues Label anlegen“ (Wunsch 08.11.2026, die Browser-Vorschlagsliste zeigte das nicht).
+// Groß- und Kleinschreibung zählt nicht doppelt: „kunde“ wählt das vorhandene „Kunde“.
 function InlineLabels({ value, onChange }) {
   const all = useAllLabels();
   const [adding, setAdding] = useState(false);
   const [q, setQ] = useState('');
-  const listId = useMemo(() => `labels-${Math.random().toString(36).slice(2)}`, []);
-  const add = () => {
-    const l = q.trim();
-    setQ('');
-    setAdding(false);
-    if (l && !value.includes(l)) onChange([...value, l]);
+  // Ohne Tippen ist nichts markiert, ein versehentliches Enter vergibt also kein Label
+  const [active, setActive] = useState(-1);
+  const inputRef = useRef(null);
+  useEffect(() => { if (adding) inputRef.current?.focus(); }, [adding]);
+  const t = q.trim();
+  const has = (list, l) => list.some((x) => x.toLowerCase() === l.toLowerCase());
+  const free = all.filter((l) => !has(value, l));
+  const hits = (t ? free.filter((l) => matches(t, l)) : free).slice(0, 12);
+  const exact = [...all, ...value].find((l) => l.toLowerCase() === t.toLowerCase());
+  const options = [...hits.map((l) => ({ label: l })), ...(t && !exact ? [{ label: t, create: true }] : [])];
+  const close = () => { setQ(''); setAdding(false); setActive(-1); };
+  const pick = (l) => {
+    if (l && !has(value, l)) onChange([...value, l]);
+    close();
   };
+  // Enter: markierter Eintrag. Weggetippt oder getippt ohne Liste: der getippte Begriff, vorhandene Schreibweise zuerst
+  const typed = () => pick(exact || t);
+  function onKey(e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive((x) => Math.min(x + 1, options.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((x) => Math.max(x - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (active >= 0 && options[active]) pick(options[active].label); else typed(); }
+    else if (e.key === 'Escape') { e.stopPropagation(); close(); }
+  }
   return html`<div class="chips inline-labels">
     ${value.map((l) => html`<span class="chip" key=${l}>${l}<button type="button" class="chip-x" title=${`„${l}“ entfernen`}
       aria-label=${`Label ${l} entfernen`} onClick=${() => onChange(value.filter((x) => x !== l))}>×</button></span>`)}
-    ${adding ? html`<input class="chip-input" list=${listId} value=${q} placeholder="Label" ref=${(el) => el?.focus()}
-        onInput=${(e) => setQ(e.target.value)} onBlur=${add}
-        onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } if (e.key === 'Escape') { e.stopPropagation(); setQ(''); setAdding(false); } }} />
-      <datalist id=${listId}>${all.filter((l) => !value.includes(l)).map((l) => html`<option key=${l} value=${l} />`)}</datalist>`
+    ${adding ? html`<div class="combo label-combo">
+        <input ref=${inputRef} class="chip-input" value=${q} placeholder="Label suchen oder neu" autocomplete="off" aria-label="Label"
+          onInput=${(e) => { setQ(e.target.value); setActive(e.target.value.trim() ? 0 : -1); }}
+          onBlur=${() => setTimeout(() => { if (inputRef.current && document.activeElement !== inputRef.current) typed(); }, 150)}
+          onKeyDown=${onKey} />
+        <ul class="combo-list" role="listbox">
+          ${!t && html`<li class="combo-hint" aria-disabled="true">Neues Label: einfach eintippen</li>`}
+          ${options.map((o, i) => html`<li key=${(o.create ? '+' : '') + o.label} role="option" class=${i === active ? 'on' : ''}
+              onMouseDown=${(e) => { e.preventDefault(); pick(o.label); }}>
+            ${o.create ? html`<span class="combo-new">+ „${o.label}“ als neues Label anlegen</span>` : o.label}</li>`)}
+          ${t && !options.length && html`<li class="combo-hint" aria-disabled="true">„${exact}“ ist schon vergeben</li>`}
+        </ul>
+      </div>`
     : html`<button type="button" class="chip dashed label-add" onClick=${() => setAdding(true)}>+ Label</button>`}
   </div>`;
 }

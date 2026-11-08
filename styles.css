@@ -312,7 +312,12 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 /* Labels direkt vergeben (Kontakt, Firma, Deal) und auf den Board-Karten */
 .inline-labels { align-items: center; }
 .inline-labels .chip { gap: 3px; padding-right: 6px; }
-.inline-labels .chip-input { width: 150px; }
+.inline-labels .chip-input { width: 190px; }
+/* Klappliste beim Label: vorhandene Begriffe und „als neues Label anlegen“ */
+.label-combo { display: inline-block; }
+.label-combo .combo-list { right: auto; min-width: 300px; max-width: min(380px, 86vw); }
+.combo-list li.combo-hint { cursor: default; color: var(--muted); font-size: 12.5px; padding: 6px 10px; }
+.combo-list li.combo-hint:hover { background: transparent; }
 .label-add { cursor: pointer; color: var(--muted); font: 12.5px var(--font); }
 .label-add:hover { color: var(--text); border-color: var(--gold); }
 .card-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
