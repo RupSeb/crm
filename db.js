@@ -256,10 +256,10 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v7';
+const KEY = 'crm-demo-v8';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
-  'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten'];
+  'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten', 'verkauf'];
 // Zum Ausprobieren der Gast-Ansicht: ?demo&gast in der Adresse
 const DEMO_GUEST = new URLSearchParams(location.search).has('gast');
 const DEMO_USERS = [
@@ -377,6 +377,30 @@ function demoFeedback(card, before) {
   demoAktLog(a, null);
 }
 
+// Wie die Trigger in supabase/32_verkauf.sql: Abschlussdatum und Verlustgrund sauber halten, Verlauf am Deal
+function demoVerkauf(r, before) {
+  const heute = new Date();
+  const tag = `${heute.getFullYear()}-${String(heute.getMonth() + 1).padStart(2, '0')}-${String(heute.getDate()).padStart(2, '0')}`;
+  r.status = r.status || 'offen';
+  r.verlustgrund = String(r.verlustgrund || '').trim() || null;
+  if (r.status === 'offen') { r.abgeschlossen_am = null; r.verlustgrund = null; } else {
+    if (r.status !== 'verloren') r.verlustgrund = null;
+    if (before && r.status !== before.status && (r.abgeschlossen_am ?? null) === (before.abgeschlossen_am ?? null)) r.abgeschlossen_am = tag;
+    r.abgeschlossen_am = r.abgeschlossen_am || tag;
+  }
+  if (r.wert === '' || r.wert === undefined) r.wert = null;
+  const w = (x) => (x === null || x === undefined ? '' : String(Number(x)));
+  if (!before) {
+    if (r.wert !== null) logDemo(r.card_id, 'verkauf_wert', '|' + w(r.wert));
+    logDemo(r.card_id, 'verkauf_status', `${r.status}|${r.verlustgrund || ''}`);
+    return;
+  }
+  if (w(r.wert) !== w(before.wert)) logDemo(r.card_id, 'verkauf_wert', `${w(before.wert)}|${w(r.wert)}`);
+  if (r.status !== before.status || (r.status === 'verloren' && r.verlustgrund !== before.verlustgrund)) {
+    logDemo(r.card_id, 'verkauf_status', `${r.status}|${r.verlustgrund || ''}`);
+  }
+}
+
 let demoKonten = [
   { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true, darf_termine: true },
   { id: 2, address: 'team@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 0, termine: 0, darf_senden: false, darf_termine: false },
@@ -482,8 +506,10 @@ const demo = {
     location.reload();
   },
   async list(table, filter = {}) {
+    if (DEMO_GUEST && table === 'verkauf') return [];
     return state()[table]
       .filter((r) => Object.entries(filter).every(([k, v]) => r[k] === v))
+      .filter((r) => !(DEMO_GUEST && table === 'card_events' && String(r.kind).startsWith('verkauf')))
       .map(copy);
   },
   async get(table, id) {
@@ -536,16 +562,19 @@ const demo = {
     Object.assign(r, patch, { updated_at: now() });
     if (table === 'cards') { logDemoUpdate(before, r); demoFeedback(r, before); }
     if (table === 'aktivitaeten') demoAktLog(r, before);
+    if (table === 'verkauf') demoVerkauf(r, before);
     persist();
     return copy(r);
   },
+  // Wie in PostgREST: nur die mitgeschickten Spalten ändern sich, der Rest bleibt
   async upsert(table, row, onConflict) {
     const s = state();
     const keys = onConflict.split(',');
     const old = s[table].find((x) => keys.every((k) => x[k] === row[k]));
     s[table] = s[table].filter((x) => x !== old);
     if (!old) s.seq += 1;
-    const r = { id: old?.id ?? s.seq, ...row };
+    const r = { ...(old || { created_at: now() }), id: old?.id ?? s.seq, ...row, updated_at: now() };
+    if (table === 'verkauf') demoVerkauf(r, old || null);
     s[table].push(r);
     persist();
     return copy(r);
@@ -560,6 +589,7 @@ const demo = {
       s.card_events = s.card_events.filter((x) => x.card_id !== id);
       s.card_seen = s.card_seen.filter((x) => x.card_id !== id);
       s.aktivitaeten = s.aktivitaeten.filter((x) => x.card_id !== id);
+      s.verkauf = s.verkauf.filter((x) => x.card_id !== id);
     }
     if (table === 'persons') unlink('aktivitaeten', 'person_id');
     if (table === 'organizations') unlink('aktivitaeten', 'org_id');

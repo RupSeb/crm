@@ -8,7 +8,7 @@ export function demoSeed() {
   const s = {
     projects: [], stages: [], organizations: [], persons: [], cards: [], notes: [],
     meetings: [], meeting_persons: [], emails: [], email_persons: [], events: [], event_persons: [], card_shares: [],
-    project_shares: [], card_events: [], card_seen: [], aktivitaeten: [],
+    project_shares: [], card_events: [], card_seen: [], aktivitaeten: [], verkauf: [],
   };
 
   const projects = [['Vertrieb', '#7fa7c9'], ['Objekte', '#d98b4f'], ['Allgemein', '#a9b4ae'], ['Kooperationen', '#b08fd6']];
@@ -66,9 +66,9 @@ export function demoSeed() {
   const angebot = card('Angebot Kundenportal schreiben', 'Vertrieb', 'To-Dos', anna, 0, { priority: 'hoch', due_date: inDays(0) });
   card('Präsentation aktualisiert zuschicken', 'Kooperationen', 'To-Dos', david, 1, { priority: 'mittel', due_date: inDays(2) });
   const rahmen = card('Rahmenvertrag – Rückmeldung?', 'Kooperationen', 'Feedback von Anderen', david, 2);
-  card('Rollout Kundenportal', 'Vertrieb', 'Ongoing', anna, 4);
+  const rollout = card('Rollout Kundenportal', 'Vertrieb', 'Ongoing', anna, 4);
   card('Kooperation Region Süd', 'Kooperationen', 'Zukünftig', null, 20);
-  card('Termin Musterfirma vorbereiten', 'Vertrieb', 'Erledigt', anna, 6);
+  const terminMuster = card('Termin Musterfirma vorbereiten', 'Vertrieb', 'Erledigt', anna, 6);
   const vertrag = card('Mietvertrag – Feedback?', 'Objekte', 'Feedback von Anderen', clara, 3);
   card('Rechnung Software prüfen', 'Allgemein', 'To-Dos', null, 2, { due_date: inDays(-2) });
   card('Rückfragen Anwalt klären', 'Objekte', 'Erledigt', clara, 7);
@@ -76,6 +76,8 @@ export function demoSeed() {
   card('Finanzierung klären', 'Objekte', 'Ongoing', frank, 9, { due_date: inDays(10) });
   card('Neue Zielgruppe testen', 'Vertrieb', 'To-Dos', ben, 0);
   card('Rechnungen einfordern', 'Allgemein', 'To-Dos', null, 5, { priority: 'niedrig' });
+  const wartung = card('Wartungsvertrag Beispiel Handel', 'Vertrieb', 'Erledigt', ben, 12);
+  const ausschreibung = card('Ausschreibung Kanzlei Beispiel', 'Vertrieb', 'Erledigt', clara, 28);
 
   const note = (content, ref, days, extra = {}) => {
     s.notes.push({
@@ -165,6 +167,17 @@ export function demoSeed() {
     akt({ card_id: rahmen.id, art: 'wiedervorlage', faellig: inDays(4), owner: 'demo@beispiel.de' }),
     akt({ person_id: eva.id, art: 'anruf', titel: 'Besichtigungstermin abstimmen', faellig: inDays(0) }),
   ];
+  // Sales (32_verkauf.sql): drei offene Deals, einer davon ohne nächsten Schritt, einer schon erledigt ohne Ergebnis,
+  // dazu je ein gewonnener und ein verlorener. Der geteilte Rahmenvertrag hat einen Wert, den der Gast nicht sieht.
+  const vk = (c, wert, status = 'offen', extra = {}) => s.verkauf.push({
+    id: id(), card_id: c.id, wert, status, verlustgrund: null, abgeschlossen_am: null, created_at: ago(10), updated_at: ago(2), ...extra,
+  });
+  vk(angebot, 48000);
+  vk(rahmen, 120000);
+  vk(rollout, 18500);
+  vk(terminMuster, 12000);
+  vk(wartung, 36000, 'gewonnen', { abgeschlossen_am: inDays(-12) });
+  vk(ausschreibung, 22000, 'verloren', { abgeschlossen_am: inDays(-28), verlustgrund: 'Preis zu hoch' });
   // Termine heute und in den nächsten Tagen, Uhrzeit in Ortszeit
   const at = (days, hour, min = 0) => {
     const d = new Date();

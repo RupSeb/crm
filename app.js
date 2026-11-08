@@ -120,6 +120,34 @@ function dueInfo(due) {
   return { label: date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }), cls: '' };
 }
 
+// Sales (32_verkauf.sql): Wert netto in Euro und Status je Deal, wie in Pipedrive. Ein Deal gehört zu Sales,
+// sobald er eine Zeile in „verkauf“ hat, alle anderen Karten bleiben reine Aufgaben.
+const VK_STATUS = [['offen', 'In Bearbeitung'], ['gewonnen', 'Gewonnen'], ['verloren', 'Verloren']];
+const VK = Object.fromEntries(VK_STATUS);
+const EUR = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+const eur = (n) => EUR.format(Number(n) || 0);
+// Kurz für Karten und Spaltenköpfe: 22.500 € wird „22,5 Tsd. €“, 339.000 € „339 Tsd. €“, 1.250.000 € „1,25 Mio. €“
+function eurKurz(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e6) return `${(v / 1e6).toLocaleString('de-DE', { maximumFractionDigits: 2 })} Mio. €`;
+  if (v >= 1e4) return `${(v / 1e3).toLocaleString('de-DE', { maximumFractionDigits: v < 1e5 ? 1 : 0 })} Tsd. €`;
+  return eur(v);
+}
+// Eingabe wie „25.000“, „25000,50“, „25 Tsd.“, „25k“ oder „1,2 Mio“. Leer ergibt null, keine Zahl NaN.
+function parseWert(s) {
+  let t = String(s ?? '').trim().toLowerCase().replace(/€|eur|\s/g, '');
+  if (!t) return null;
+  let f = 1;
+  const m = t.match(/(mio\.?|m|tsd\.?|t|k)$/);
+  if (m) { f = m[1].startsWith('m') ? 1e6 : 1e3; t = t.slice(0, -m[1].length); }
+  // Komma ist das Dezimalzeichen, Punkte trennen Tausender. Ein Punkt mit ein oder zwei Stellen dahinter gilt als Komma.
+  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+  else if (!/^\d+\.\d{1,2}$/.test(t)) t = t.replace(/\./g, '');
+  if (!/^\d+(\.\d+)?$/.test(t)) return NaN;
+  return Math.round(Number(t) * f * 100) / 100;
+}
+const wertText = (v) => (v === null || v === undefined || v === '' ? '' : Number(v).toLocaleString('de-DE', { maximumFractionDigits: 2 }));
+
 // Aktivitäten (29_aktivitaeten.sql): geplante Schritte an Deal, Kontakt oder Firma, wie in Pipedrive.
 // Die Wiedervorlage ist eine Aktivität der Art „wiedervorlage“.
 const AKT_ARTEN = [['wiedervorlage', 'Wiedervorlage', 'bell'], ['anruf', 'Anruf', 'phone'], ['mail', 'Mail', 'mail'],
@@ -243,6 +271,7 @@ const ICONS = {
   lines: '<path d="M4 6.5h16M4 12h16M4 17.5h10"/>',
   pin: '<path d="M12 21.5s7-6.4 7-11.5a7 7 0 10-14 0c0 5.1 7 11.5 7 11.5z"/><circle cx="12" cy="10" r="2.5"/>',
   more: '<circle cx="12" cy="5.5" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="12" cy="18.5" r=".9"/>',
+  sales: '<path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5 6-6.5"/><path d="M15 8h4v4"/>',
 };
 function Icon({ n }) {
   return html`<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -506,6 +535,7 @@ function Login({ start, onDone }) {
 const TABS = [
   ['heute', 'Übersicht', 'home', '#/heute'],
   ['board', 'Board', 'board', '#/board'],
+  ['sales', 'Sales', 'sales', '#/sales'],
   ['postfach', 'Postfach', 'mail', '#/postfach'],
   ['kalender', 'Kalender', 'calendar', '#/kalender'],
   ['meetings', 'Meetings', 'mic', '#/meetings'],
@@ -513,7 +543,7 @@ const TABS = [
   ['firmen', 'Firmen', 'building', '#/firmen'],
 ];
 const TAB_OF = {
-  heute: 'heute', board: 'board', karte: 'board', postfach: 'postfach', kalender: 'kalender', termin: 'kalender',
+  heute: 'heute', board: 'board', karte: 'board', sales: 'sales', postfach: 'postfach', kalender: 'kalender', termin: 'kalender',
   meetings: 'meetings', meeting: 'meetings', kontakte: 'kontakte', kontakt: 'kontakte', firmen: 'firmen', firma: 'firmen',
 };
 // Meetings ohne die (langen) Zusammenfassungen laden, die kommen erst beim Öffnen.
@@ -543,7 +573,7 @@ function Main({ session }) {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
         card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude, antworten, postfach_neu, einstellungen,
-        aktivitaeten] = await Promise.all([
+        aktivitaeten, verkauf] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -561,6 +591,7 @@ function Main({ session }) {
         db.rpc('postfach_neu').catch(() => 0),
         db.list('nutzer_einstellungen').catch(() => []),
         db.list('aktivitaeten').catch(() => []),
+        db.list('verkauf').catch(() => []),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
@@ -572,7 +603,9 @@ function Main({ session }) {
       setData({ projects, stages, organizations, persons, cards, meetings, meeting_persons, events, event_persons,
         card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [], claude,
         antworten: antworten || [], postfach_neu: postfach_neu || 0, einstellungen: einstellungen?.[0]?.werte || {},
-        aktivitaeten: aktivitaeten || [] });
+        aktivitaeten: aktivitaeten || [],
+        // Werte und Status (32_verkauf.sql) bekommt ein Gast von der Datenbank nicht, in der Demo auch nicht
+        verkauf: role === 'gast' ? [] : verkauf || [] });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -674,6 +707,25 @@ function Main({ session }) {
           try { put('cards', await db.update('cards', card.id, { due_date: null })); } catch (e) { fail(e); }
         }
         return faellig;
+      },
+      // Sales (32_verkauf.sql): Wert, Status, Verlustgrund oder Abschlussdatum eines Deals setzen.
+      // Die Datenbank setzt das Abschlussdatum selbst und schreibt den Verlauf.
+      async saveVerkauf(cardId, fields) {
+        try {
+          const saved = await db.upsert('verkauf', { card_id: cardId, ...fields }, 'card_id');
+          setData((d) => ({ ...d, verkauf: [...(d.verkauf || []).filter((x) => x.card_id !== cardId), saved] }));
+          reloadHistory(cardId);
+          return saved;
+        } catch (e) { fail(e); throw e; }
+      },
+      // Deal aus Sales nehmen, die Karte selbst bleibt
+      async removeVerkauf(cardId) {
+        const row = (dataRef.current?.verkauf || []).find((x) => x.card_id === cardId);
+        if (!row) return;
+        try {
+          await db.remove('verkauf', row.id);
+          setData((d) => ({ ...d, verkauf: d.verkauf.filter((x) => x.card_id !== cardId) }));
+        } catch (e) { fail(e); throw e; }
       },
       load,
       fail,
@@ -848,6 +900,7 @@ function Main({ session }) {
     const aktMine = (a) => (a.zustaendig ? a.zustaendig.toLowerCase() === me : !a.owner || a.owner.toLowerCase() === me);
     return {
       answerOf,
+      verkaufOf: new Map((data.verkauf || []).map((v) => [v.card_id, v])),
       aktOffen,
       aktOfCard,
       aktMine,
@@ -912,6 +965,7 @@ function Main({ session }) {
   const renderPage = ([s, id]) => {
     switch (s) {
       case 'board': return html`<${Board} projectId=${id} />`;
+      case 'sales': return html`<${SalesPage} projectId=${id} />`;
       case 'meetings': return html`<${MeetingsList} projectId=${id} />`;
       case 'postfach': return html`<${MailboxPage} />`;
       case 'kalender': return html`<${CalendarPage} />`;
@@ -2142,6 +2196,149 @@ function TodoRow({ card, waiting, follow, noProject, answer }) {
 }
 
 // ---------------------------------------------------------------------------
+// Sales (32_verkauf.sql): wie viel Geld offen liegt, was gewonnen und verloren ist und worauf es ankommt
+// ---------------------------------------------------------------------------
+const VK_ZEITRAUM = [['monat', 'Dieser Monat'], ['quartal', 'Quartal'], ['jahr', 'Dieses Jahr'], ['12m', '12 Monate'], ['alle', 'Alles']];
+function zeitraumAb(z) {
+  const d = new Date();
+  const ymd = (y, m) => `${y}-${String(m + 1).padStart(2, '0')}-01`;
+  if (z === 'monat') return ymd(d.getFullYear(), d.getMonth());
+  if (z === 'quartal') return ymd(d.getFullYear(), d.getMonth() - (d.getMonth() % 3));
+  if (z === 'jahr') return ymd(d.getFullYear(), 0);
+  if (z === '12m') return addDays(todayStr(), -365);
+  return '';
+}
+const dealsText = (n) => (n === 1 ? '1 Deal' : `${n} Deals`);
+
+function SalesPage({ projectId }) {
+  const { projects, verkauf, idx } = useApp();
+  const [zeit, setZeit] = useStored('crm-sales-zeit', 'jahr');
+  const project = projectId ? idx.project.get(Number(projectId)) : null;
+  const ab = zeitraumAb(zeit);
+  const zeitName = { monat: 'diesen Monat', quartal: 'dieses Quartal', jahr: 'dieses Jahr', '12m': 'in 12 Monaten', alle: 'insgesamt' }[zeit] || '';
+  const alle = verkauf.map((v) => ({ v, c: idx.card.get(v.card_id) })).filter((x) => x.c);
+  const rows = alle.filter((x) => !project || x.c.project_id === project.id);
+  const wert = (x) => Number(x.v.wert) || 0;
+  const sum = (l) => l.reduce((n, x) => n + wert(x), 0);
+  // Offen und noch in Arbeit. Liegt ein offener Deal schon in „Erledigt“ oder im Archiv, fehlt nur das Ergebnis.
+  const fertig = (c) => c.archived || idx.stage.get(c.stage_id)?.is_done;
+  const offen = rows.filter((x) => x.v.status === 'offen');
+  const laufend = offen.filter((x) => !fertig(x.c));
+  const ohneErgebnis = offen.filter((x) => fertig(x.c)).sort((a, b) => wert(b) - wert(a));
+  const imZeitraum = (x) => !ab || (x.v.abgeschlossen_am || '') >= ab;
+  const byAbschluss = (a, b) => (b.v.abgeschlossen_am || '').localeCompare(a.v.abgeschlossen_am || '');
+  const gewonnen = rows.filter((x) => x.v.status === 'gewonnen' && imZeitraum(x));
+  const verloren = rows.filter((x) => x.v.status === 'verloren' && imZeitraum(x));
+  const abgeschlossen = [...gewonnen, ...verloren].sort(byAbschluss);
+  const quote = gewonnen.length + verloren.length ? Math.round((100 * gewonnen.length) / (gewonnen.length + verloren.length)) : null;
+  // Fokus: größte offene Deals zuerst, Deals ohne Wert ans Ende
+  const fokus = [...laufend].sort((a, b) => wert(b) - wert(a) || byUpdatedDesc(a.c, b.c));
+  const ohneSchritt = laufend.filter((x) => !idx.nextAkt(x.c.id)).length;
+  const maxWert = Math.max(0, ...laufend.map(wert));
+  const jeProjekt = projects.map((p) => {
+    const l = alle.filter((x) => x.v.status === 'offen' && !fertig(x.c) && x.c.project_id === p.id);
+    return { p, n: l.length, sum: sum(l) };
+  }).filter((x) => x.n > 0).sort((a, b) => b.sum - a.sum);
+  const maxProjekt = Math.max(1, ...jeProjekt.map((x) => x.sum));
+  const offenJe = new Map(jeProjekt.map((x) => [x.p.id, x.n]));
+  const offenAlle = jeProjekt.reduce((n, x) => n + x.n, 0);
+
+  return html`<div class="page sales-page">
+    <${PageHead} title="Sales" />
+    <div class="project-tabs filter">
+      <a href="#/sales" class=${'ptab all' + (!project ? ' on' : '')}>Alle<span class="ptab-n">${offenAlle}</span></a>
+      ${projects.map((p) => html`<a key=${p.id} href=${`#/sales/${p.id}`} class=${'ptab' + (project?.id === p.id ? ' on' : '')}
+        style=${`--pc:${p.color}`}><span class="dot"></span>${p.name}<span class="ptab-n">${offenJe.get(p.id) || 0}</span></a>`)}
+    </div>
+    <div class="sales-kpis">
+      <div class="kpi"><span class="kpi-label">Offen</span><b class="kpi-num">${eur(sum(laufend))}</b>
+        <span class="kpi-sub">${dealsText(laufend.length)} in Bearbeitung</span></div>
+      <div class="kpi"><span class="kpi-label"><span class="kpi-dot gewonnen"></span>Gewonnen</span><b class="kpi-num">${eur(sum(gewonnen))}</b>
+        <span class="kpi-sub">${dealsText(gewonnen.length)} ${zeitName}</span></div>
+      <div class="kpi"><span class="kpi-label"><span class="kpi-dot verloren"></span>Verloren</span><b class="kpi-num">${eur(sum(verloren))}</b>
+        <span class="kpi-sub">${dealsText(verloren.length)} ${zeitName}</span></div>
+      <div class="kpi"><span class="kpi-label">Gewinnquote</span><b class="kpi-num">${quote === null ? '–' : `${quote} %`}</b>
+        <span class="kpi-sub">${quote === null ? `${zeitName === 'insgesamt' ? 'Noch' : `${zeitName[0].toUpperCase()}${zeitName.slice(1)}`} nichts abgeschlossen` : `${gewonnen.length} von ${gewonnen.length + verloren.length} abgeschlossenen`}</span></div>
+    </div>
+    <div class="sales-zeit"><span class="muted small">Gewonnen und verloren</span>
+      <div class="seg small">${VK_ZEITRAUM.map(([k, l]) => html`<button type="button" key=${k} class=${'seg-btn' + (zeit === k ? ' on' : '')}
+        onClick=${() => setZeit(k)}>${l}</button>`)}</div></div>
+    <div class="sales-grid">
+      <section class="tile sales-focus">
+        <h2>Größte offene Deals <span class="count">${fokus.length}</span>
+          ${ohneSchritt > 0 && html`<span class="count no-step-count" title="Offene Deals ohne geplante Aktivität">${ohneSchritt} ohne nächsten Schritt</span>`}</h2>
+        ${fokus.map((x) => html`<${SalesRow} key=${x.v.id} v=${x.v} card=${x.c} max=${maxWert} />`)}
+        ${fokus.length === 0 && html`<p class="muted small">Noch keine offenen Deals in Sales. Trag im Deal unter „Wert netto“ einen Betrag ein
+          oder tipp auf „In Bearbeitung“, dann steht er hier, die größten zuerst.</p>`}
+      </section>
+      <div class="sales-side">
+        ${ohneErgebnis.length > 0 && html`<section class="tile sales-hint">
+          <h2>Erledigt, aber ohne Ergebnis <span class="count">${ohneErgebnis.length}</span></h2>
+          <p class="muted small">Diese Deals liegen in „Erledigt“ oder im Archiv und zählen nicht mehr als offen. Gewonnen oder verloren?</p>
+          ${ohneErgebnis.map((x) => html`<${SalesRow} key=${x.v.id} v=${x.v} card=${x.c} ergebnis />`)}
+        </section>`}
+        ${!project && jeProjekt.length > 0 && html`<section class="tile">
+          <h2>Offen je Projekt</h2>
+          ${jeProjekt.map((x) => html`<a key=${x.p.id} class="vk-bar-row" href=${`#/sales/${x.p.id}`} style=${`--pc:${x.p.color}`}
+              title=${`${x.p.name}: ${eur(x.sum)} in ${dealsText(x.n)}`}>
+            <span class="vk-bar-name"><span class="dot"></span>${x.p.name}<span class="muted"> · ${dealsText(x.n)}</span></span>
+            <b>${eur(x.sum)}</b>
+            <span class="vk-bar"><i style=${`width:${Math.max(1.5, (100 * x.sum) / maxProjekt)}%`}></i></span>
+          </a>`)}
+        </section>`}
+        <section class="tile">
+          <h2>Abgeschlossen ${zeitName} <span class="count">${abgeschlossen.length}</span></h2>
+          ${abgeschlossen.map((x) => html`<a key=${x.v.id} class="vk-done-row" href=${`#/karte/${x.c.id}`}>
+            <span class=${'kpi-dot ' + x.v.status} title=${VK[x.v.status]}></span>
+            <span class="vk-done-main"><span class="row-title">${x.c.title}</span>
+              <span class="row-sub">${VK[x.v.status]} am ${x.v.abgeschlossen_am ? shortDate(x.v.abgeschlossen_am + 'T12:00') : '–'}${x.v.verlustgrund ? ` · ${x.v.verlustgrund}` : ''}</span></span>
+            <b class=${x.v.status === 'verloren' ? 'muted' : ''}>${x.v.wert != null ? eur(x.v.wert) : '–'}</b>
+          </a>`)}
+          ${abgeschlossen.length === 0 && html`<p class="muted small">Im Deal unter „Sales“ auf „Gewonnen“ oder „Verloren“ tippen, dann steht er hier
+            und zählt für die Gewinnquote.</p>`}
+        </section>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Zeile in Sales: Titel, Projekt, Spalte und Kontakt, nächster Schritt, Wert mit Balken im Verhältnis zum größten Deal.
+// ergebnis: Knöpfe „Gewonnen“ und „Verloren“ für Deals, die schon erledigt sind.
+function SalesRow({ v, card, max = 0, ergebnis = false }) {
+  const { idx, actions } = useApp();
+  const pr = idx.project.get(card.project_id);
+  const st = idx.stage.get(card.stage_id);
+  const wer = idx.person.get(card.person_id)?.name || idx.org.get(card.org_id)?.name;
+  const akt = idx.nextAkt(card.id);
+  const ai = akt && dueInfo(akt.faellig);
+  const meta = [pr?.name, card.archived ? 'Archiv' : st?.name, wer].filter(Boolean).join(' · ');
+  const open = () => go(`#/karte/${card.id}`);
+  async function setze(e, status) {
+    e.stopPropagation();
+    try {
+      await actions.saveVerkauf(card.id, { status });
+      actions.notify(`„${card.title}“ als ${VK[status].toLowerCase()} markiert.`, () => actions.saveVerkauf(card.id, { status: 'offen' }));
+    } catch { /* Meldung kommt über fail */ }
+  }
+  return html`<div class="sales-row" role="link" tabindex="0" onClick=${open} onKeyDown=${(e) => { if (e.key === 'Enter') open(); }}
+      style=${`--pc:${pr?.color || '#888'}`}>
+    <div class="sales-row-main">
+      <div class="row-title">${card.title}</div>
+      <div class="row-sub"><span class="dot"></span>${meta}</div>
+      ${ergebnis ? html`<div class="sales-actions">
+          <button type="button" class="btn sm" onClick=${(e) => setze(e, 'gewonnen')}><${Icon} n="check" />Gewonnen</button>
+          <button type="button" class="btn sm ghost" onClick=${(e) => setze(e, 'verloren')}>Verloren</button></div>`
+    : html`<div class="sales-next">${akt ? html`<span class=${'akt-badge ' + ai.cls} title=${AKT[akt.art]?.label}>
+          <${Icon} n=${AKT[akt.art]?.icon || 'bell'} />${aktName(akt)} · ${ai.label}</span>`
+      : html`<span class="badge no-step" title="Keine offene Aktivität an diesem Deal">Kein nächster Schritt</span>`}
+        ${idx.answerOf.has(card.id) && html`<span class="badge answer-badge">Antwort da</span>`}</div>`}
+    </div>
+    <div class="sales-val"><b>${v.wert != null ? eur(v.wert) : html`<span class="muted">ohne Wert</span>`}</b>
+      ${!ergebnis && max > 0 && v.wert != null && html`<span class="vk-bar"><i style=${`width:${Math.max(1.5, (100 * Number(v.wert)) / max)}%`}></i></span>`}</div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
 // Board
 // ---------------------------------------------------------------------------
 // Menü einer Spalte: umbenennen, verschieben, daneben anlegen, löschen. „Erledigt“ bleibt immer und bleibt hinten.
@@ -2226,6 +2423,11 @@ function Board({ projectId }) {
     if (c && c.stage_id !== stageId) actions.patch('cards', cardId, { stage_id: stageId });
   };
   const newHref = (s) => `#/karte/neu?projekt=${project.id}&spalte=${s.id}`;
+  // Offener Wert je Spalte wie in Pipedrive (32_verkauf.sql)
+  const colSum = (list) => list.reduce((n, c) => {
+    const v = idx.verkaufOf.get(c.id);
+    return v && v.status === 'offen' && v.wert ? n + Number(v.wert) : n;
+  }, 0);
 
   // Spalten anlegen, umbenennen und löschen darf, wem das Projekt gehört
   const editCols = !isGuest && idx.ownsProject(project.id);
@@ -2393,6 +2595,7 @@ function Board({ projectId }) {
           ${renaming?.id === s.id ? renameInput(s) : html`
             ${editCols ? html`<button type="button" class="col-name" onClick=${() => startRename(s)} title="Spalte umbenennen">${s.name}<${Icon} n="edit" /></button>`
             : html`<span>${s.name}</span>`}<span class="count">${byStage.get(s.id).length}</span>
+            ${colSum(byStage.get(s.id)) > 0 && html`<span class="col-sum" title=${`Offener Wert in „${s.name}“: ${eur(colSum(byStage.get(s.id)))}`}>${eurKurz(colSum(byStage.get(s.id)))}</span>`}
             <a class="icon-btn" href=${newHref(s)} title="Aufgabe hinzufügen" aria-label="Aufgabe hinzufügen"><${Icon} n="plus" /></a>
             ${editCols && colMenu(s)}`}
         </header>
@@ -2423,8 +2626,12 @@ function CardBadges({ card, noAnswer }) {
   const akt = idx.nextAkt(card.id);
   const ai = akt && dueInfo(akt.faellig);
   const mehr = akt ? (idx.aktOfCard.get(card.id) || []).length - 1 : 0;
-  if (!due && !p && !a && !akt) return null;
+  // Wert aus Sales, bei gewonnen und verloren mit Haken oder durchgestrichen
+  const vk = idx.verkaufOf.get(card.id);
+  if (!due && !p && !a && !akt && !vk) return null;
   return html`<span class="badges">
+    ${vk && html`<span class=${'vk-badge ' + vk.status} title=${`Sales: ${VK[vk.status]}${vk.wert != null ? `, ${eur(vk.wert)}` : ''}`}>
+      ${vk.status === 'gewonnen' && html`<${Icon} n="check" />`}${vk.wert != null ? eurKurz(vk.wert) : VK[vk.status]}</span>`}
     ${a && html`<span class="badge answer-badge" title=${`${a.from_name || a.from_email}: ${a.subject || 'ohne Betreff'}`}>Antwort da</span>`}
     ${akt && html`<span class=${'akt-badge ' + ai.cls} title=${`${AKT[akt.art]?.label}${akt.titel ? `: ${akt.titel}` : ''}${mehr > 0 ? ` (dazu ${mehr} weitere)` : ''}`}>
       <${Icon} n=${AKT[akt.art]?.icon || 'bell'} />${ai.label}${aktZeit(akt) ? ` ${aktZeit(akt)}` : ''}</span>`}
@@ -2563,6 +2770,18 @@ function historyText(e, idx) {
       const [art, text] = String(d || '').split('|');
       return `hat „${text || AKT[art]?.label || 'Aktivität'}“ erledigt`;
     }
+    // Sales (32_verkauf.sql), detail „alt|neu“ bzw. „status|grund“
+    case 'verkauf_wert': {
+      const [alt, neu] = String(d || '').split('|');
+      if (!neu) return 'hat den Wert entfernt';
+      return alt ? `hat den Wert von ${eur(alt)} auf ${eur(neu)} geändert` : `hat den Wert auf ${eur(neu)} gesetzt`;
+    }
+    case 'verkauf_status': {
+      const [st, grund] = String(d || '').split('|');
+      if (st === 'gewonnen') return 'hat den Deal als gewonnen markiert';
+      if (st === 'verloren') return `hat den Deal als verloren markiert${grund ? `, Grund: „${grund}“` : ''}`;
+      return 'hat den Deal auf „In Bearbeitung“ gesetzt';
+    }
     default: return e.kind;
   }
 }
@@ -2601,6 +2820,12 @@ function CardSheet({ id, query }) {
     };
   });
   const [busy, setBusy] = useState(false);
+  // Sales (32_verkauf.sql): Wert und Verlustgrund als Text im Feld, gespeichert beim Verlassen des Felds.
+  // Der Status speichert sofort, bei einer neuen Aufgabe erst mit „Anlegen“.
+  const vk = card ? idx.verkaufOf.get(card.id) : null;
+  const [wertIn, setWertIn] = useState(() => wertText(vk?.wert));
+  const [grundIn, setGrundIn] = useState(() => vk?.verlustgrund || '');
+  const [neuStatus, setNeuStatus] = useState(null);
   const titleRef = useRef(null);
   // Angefangene Notiz im NotesPanel, damit „Speichern“ oben sie mitnimmt
   const noteRef = useRef(null);
@@ -2643,7 +2868,21 @@ function CardSheet({ id, query }) {
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date', 'assignees', 'labels'];
   const fromMeeting = card?.meeting_id ? idx.meeting.get(card.meeting_id) : null;
-  const dirty = !card || fields.some((k) => !sameValue(form[k], k === 'assignees' ? assigneesOf(card) : k === 'labels' ? card.labels || [] : card[k]));
+  const cardDirty = !card || fields.some((k) => !sameValue(form[k], k === 'assignees' ? assigneesOf(card) : k === 'labels' ? card.labels || [] : card[k]));
+  const wertNeu = parseWert(wertIn);
+  const wertFalsch = Number.isNaN(wertNeu);
+  const grundNeu = grundIn.trim() || null;
+  const vkStatus = card ? vk?.status || (wertNeu > 0 ? 'offen' : null) : neuStatus || (wertNeu > 0 ? 'offen' : null);
+  const vkDirty = !isGuest && !wertFalsch && (card
+    ? (wertNeu !== (vk?.wert != null ? Number(vk.wert) : null) || (vk?.status === 'verloren' && grundNeu !== (vk.verlustgrund || null)))
+    : !!vkStatus);
+  const dirty = cardDirty || vkDirty;
+  // Wert und Grund sichern, Status nur, wenn es die Zeile noch nicht gibt (dann „In Bearbeitung“)
+  async function saveVk(cardId) {
+    if (!vkDirty) return;
+    const st = card ? vk?.status || 'offen' : vkStatus;
+    await actions.saveVerkauf(cardId, { wert: wertNeu, status: st, ...(st === 'verloren' ? { verlustgrund: grundNeu } : {}) });
+  }
   // Labels werden wie Zuständig sofort gespeichert
   function setLabels(labels) {
     set('labels', labels);
@@ -2662,6 +2901,44 @@ function CardSheet({ id, query }) {
       actions.patch('cards', card.id, { stage_id: sid })
         .then((saved) => { if (saved?.due_date) setForm((f) => (f.due_date ? f : { ...f, due_date: saved.due_date })); });
     }
+  }
+  // Sales-Status: sofort gespeichert, ein angefangener Wert gleich mit. Gewonnen oder verloren schiebt den Deal
+  // wie in Pipedrive aus der laufenden Arbeit nach „Erledigt“, mit „Rückgängig“.
+  async function pickStatus(st) {
+    if (!card) { setNeuStatus(st); return; }
+    if (wertFalsch) { actions.notify('Beim Wert steht keine Zahl. Bitte z. B. 25.000 eintragen.'); return; }
+    const before = vk ? { status: vk.status, wert: vk.wert, verlustgrund: vk.verlustgrund ?? null, abgeschlossen_am: vk.abgeschlossen_am ?? null } : null;
+    try {
+      await actions.saveVerkauf(card.id, { status: st, wert: wertNeu, ...(st === 'verloren' ? { verlustgrund: grundNeu } : {}) });
+    } catch { return; }
+    if (st === 'offen') return;
+    const doneStage = projStages.find((s) => s.is_done);
+    const prevStage = card.stage_id;
+    const undo = async () => {
+      if (before) await actions.saveVerkauf(card.id, before); else await actions.removeVerkauf(card.id);
+      if (prevStage !== doneStage?.id) {
+        await actions.patch('cards', card.id, { stage_id: prevStage });
+        setForm((f) => ({ ...f, stage_id: prevStage }));
+      }
+    };
+    if (doneStage && prevStage !== doneStage.id && form.project_id === card.project_id) {
+      set('stage_id', doneStage.id);
+      await actions.patch('cards', card.id, { stage_id: doneStage.id });
+      actions.notify(`Als ${VK[st].toLowerCase()} markiert und nach „${doneStage.name}“ verschoben.`, undo);
+    } else actions.notify(`Als ${VK[st].toLowerCase()} markiert.`, undo);
+  }
+  // Wert oder Grund beim Verlassen des Felds sichern
+  function blurVk() {
+    if (!wertFalsch) setWertIn(wertText(wertNeu));
+    if (card && vkDirty) saveVk(card.id).catch(() => {});
+  }
+  async function outOfSales() {
+    if (!confirm('Diesen Deal aus Sales nehmen? Wert und Status werden gelöscht, die Aufgabe bleibt.')) return;
+    try {
+      await actions.removeVerkauf(card.id);
+      setWertIn('');
+      setGrundIn('');
+    } catch { /* Meldung kommt über fail */ }
   }
   // „Warte auf Antwort“: nach „Feedback …“ schieben und die Wiedervorlage setzen, beides sofort gespeichert
   const waitStage = projStages.find((s) => stageKind(s) === 'waiting');
@@ -2689,7 +2966,8 @@ function CardSheet({ id, query }) {
     if (!form.title.trim()) return;
     setBusy(true);
     try {
-      const saved = await actions.save('cards', { ...(card ? { id: card.id } : {}), ...form, title: form.title.trim() });
+      const saved = cardDirty ? await actions.save('cards', { ...(card ? { id: card.id } : {}), ...form, title: form.title.trim() }) : card;
+      await saveVk(saved.id);
       if (!card) go(`#/karte/${saved.id}`, true);
     } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
   }
@@ -2698,7 +2976,8 @@ function CardSheet({ id, query }) {
     if (!form.title.trim()) return;
     setBusy(true);
     try {
-      if (dirty) await actions.save('cards', { ...(card ? { id: card.id } : {}), ...form, title: form.title.trim() });
+      const saved = cardDirty ? await actions.save('cards', { ...(card ? { id: card.id } : {}), ...form, title: form.title.trim() }) : card;
+      await saveVk(saved.id);
       if (noteRef.current?.pending() && !(await noteRef.current.save())) return;
       close();
     } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
@@ -2792,6 +3071,28 @@ function CardSheet({ id, query }) {
         <div class="seg wrap">${projStages.map((s) => html`<button type="button" key=${s.id}
           class=${'seg-btn' + (s.id === form.stage_id ? ' on' : '')} onClick=${() => pickStage(s.id)}>${s.name}</button>`)}</div>
       </div>
+      ${!isGuest && html`<div class="field-row vk-row">
+        <label class="field vk-wert"><span>Wert netto</span>
+          <div class="money-input">
+            <input inputmode="decimal" value=${wertIn} placeholder="z. B. 25.000" aria-invalid=${wertFalsch ? 'true' : 'false'}
+              onInput=${(e) => setWertIn(e.target.value)} onBlur=${blurVk}
+              onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }} />
+            <span aria-hidden="true">€</span>
+          </div></label>
+        <div class="field grow"><span>Sales</span>
+          <div class="seg wrap">${VK_STATUS.map(([k, l]) => html`<button type="button" key=${k}
+            class=${'seg-btn vk-btn vk-' + k + (vkStatus === k ? ' on' : '')} onClick=${() => pickStatus(k)}>${l}</button>`)}</div>
+        </div>
+      </div>
+      ${wertFalsch && html`<p class="small vk-fehler">Bitte eine Zahl eintragen, z. B. 25.000 oder 1,2 Mio.</p>`}
+      ${vkStatus === 'verloren' && html`<label class="field"><span>Grund für verloren</span>
+        <input value=${grundIn} placeholder="z. B. Preis, Zeitpunkt, anderer Anbieter" onInput=${(e) => setGrundIn(e.target.value)} onBlur=${blurVk}
+          onKeyDown=${(e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } }} /></label>`}
+      ${vk && html`<p class="muted small vk-meta">${vk.status === 'offen' ? 'Steht im Reiter Sales unter den offenen Deals.'
+        : `${VK[vk.status]} am`}
+        ${vk.status !== 'offen' && html`<input type="date" class="vk-datum" value=${vk.abgeschlossen_am || ''} aria-label="Abschlussdatum"
+          onChange=${(e) => actions.saveVerkauf(card.id, { abgeschlossen_am: e.target.value || null }).catch(() => {})} />`}
+        <button type="button" class="btn link sm" onClick=${outOfSales}>Aus Sales nehmen</button></p>`}`}
       <div class="field-row">
         <div class="field"><span>Dringlichkeit</span>
           <div class="seg">${Object.entries(PRIO).map(([k, p]) => html`<button type="button" key=${k}
