@@ -644,6 +644,16 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .due.late { background: #b5483c; color: #fff; }
 .due.today { background: rgba(217, 190, 144, 0.18); color: var(--gold-l); }
 .due.soon { background: rgba(127, 167, 201, 0.18); color: #a9c6de; }
+/* Nächste Aktivität am Deal (29_aktivitaeten.sql): Symbol der Art und wann, Farben wie die Fälligkeit */
+.akt-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px 1px 5px; border-radius: 6px;
+  font-size: 11.5px; font-weight: 600; line-height: 1.6; white-space: nowrap;
+  background: var(--hover); color: var(--muted); border: 1px solid var(--border);
+}
+.akt-badge .ico { width: 12px; height: 12px; }
+.akt-badge.late { background: #b5483c; color: #fff; border-color: transparent; }
+.akt-badge.today { background: rgba(217, 190, 144, 0.18); color: var(--gold-l); border-color: transparent; }
+.akt-badge.soon { background: rgba(127, 167, 201, 0.18); color: #a9c6de; border-color: transparent; }
 .card-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
 .seg-btn.prio-btn.on.prio-hoch { background: #c8604f; border-color: #c8604f; color: #fff; }
 .seg-btn.prio-btn.on.prio-mittel { background: var(--gold); border-color: var(--gold); color: var(--forest-dd); }
@@ -888,6 +898,38 @@ a.sub-link:hover { color: var(--accent); }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
 .panel h3, .notes h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 15px; }
 .panel h3 .icon-btn { margin-left: auto; }
+/* Aktivitäten an Deal, Kontakt und Firma */
+.akt-panel h3 .ico { width: 16px; height: 16px; color: var(--muted); }
+.akt-panel .akt-add { margin-left: auto; height: 30px; padding: 0 10px; font-size: 13px; }
+.akt-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
+.akt-row.editing { opacity: 0.5; }
+.akt-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 0 -8px 0 0;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text); font: 14px var(--font); text-align: left; cursor: pointer;
+}
+.akt-main:hover { background: var(--hover); }
+.akt-ico { display: inline-flex; color: var(--muted); flex: none; }
+.akt-ico .ico { width: 15px; height: 15px; }
+.akt-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.akt-when { flex: none; padding: 1px 7px; border-radius: 6px; font-size: 12px; font-weight: 600; background: var(--hover); color: var(--muted); }
+.akt-when.late { background: #b5483c; color: #fff; }
+.akt-when.today { background: rgba(217, 190, 144, 0.18); color: var(--gold-l); }
+.akt-when.soon { background: rgba(127, 167, 201, 0.18); color: #a9c6de; }
+.akt-bezug { flex-basis: 100%; margin: -4px 0 2px 30px; font-size: 12.5px; color: var(--muted); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.akt-bezug:hover { color: var(--text); }
+.akt-row.done { color: var(--muted); padding-left: 2px; }
+.akt-row.done .akt-title { text-decoration: line-through; }
+.akt-row.done .akt-bezug { margin-left: 24px; }
+.akt-done { margin-top: 8px; }
+.akt-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-2); }
+.akt-form .seg-btn .ico { width: 14px; height: 14px; }
+.akt-when-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.akt-when-pick input { height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: 13.5px var(--font); }
+.akt-text { height: 40px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--text); font: 15px var(--font); }
+.akt-text:focus, .akt-when-pick input:focus { outline: 0; border-color: var(--accent); }
+.akt-weiter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border-radius: 10px; background: var(--accent-soft); font-size: 13.5px; }
+.akt-weiter span { flex: 1; min-width: 160px; }
+.akt-todo .todo-title { display: flex; align-items: center; gap: 6px; }
 .mini-card {
   display: block; padding: 8px 10px; margin-bottom: 6px;
   border: 1px solid var(--border); border-radius: 9px; color: var(--text); text-decoration: none;

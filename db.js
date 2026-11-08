@@ -256,10 +256,10 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v6';
+const KEY = 'crm-demo-v7';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
-  'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen'];
+  'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten'];
 // Zum Ausprobieren der Gast-Ansicht: ?demo&gast in der Adresse
 const DEMO_GUEST = new URLSearchParams(location.search).has('gast');
 const DEMO_USERS = [
@@ -353,6 +353,28 @@ function demoOhneAntwort(tage) {
 }
 function demoGesehen() {
   return state().nutzer_gesehen.find((g) => g.bereich === 'postfach');
+}
+// Wie die Trigger in supabase/29_aktivitaeten.sql: Aktivität am Deal zählt als Änderung und kommt in den Verlauf.
+// Deal nach „Feedback …“ ohne offene Aktivität und ohne Datum: Wiedervorlage in 7 Tagen.
+function demoAktLog(a, before) {
+  if (!a.card_id) return;
+  touch('cards', a.card_id);
+  if (!before) logDemo(a.card_id, 'aktivitaet', `${a.art}|${a.faellig}|${a.titel || ''}`);
+  else if (a.erledigt_at && !before.erledigt_at) logDemo(a.card_id, 'aktivitaet_erledigt', `${a.art}|${a.titel || ''}`);
+  else if (a.faellig !== before.faellig && !a.erledigt_at) logDemo(a.card_id, 'aktivitaet_verschoben', `${a.art}|${a.faellig}|${a.titel || ''}`);
+}
+function demoFeedback(card, before) {
+  const s = state();
+  const st = s.stages.find((x) => x.id === card.stage_id);
+  if ((before && before.stage_id === card.stage_id) || card.archived || card.due_date || !st || !lc(st.name).startsWith('feedback')) return;
+  if (s.aktivitaeten.some((a) => a.card_id === card.id && !a.erledigt_at)) return;
+  const d = new Date(Date.now() + 7 * 864e5);
+  s.seq += 1;
+  const a = { id: s.seq, owner: 'demo@beispiel.de', card_id: card.id, person_id: null, org_id: null, art: 'wiedervorlage', titel: null,
+    faellig: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+    uhrzeit: null, zustaendig: null, erledigt_at: null, erledigt_von: null, created_at: now(), updated_at: now() };
+  s.aktivitaeten.push(a);
+  demoAktLog(a, null);
 }
 
 let demoKonten = [
@@ -502,7 +524,8 @@ const demo = {
         (r.mentions || []).forEach((m) => logDemo(r.card_id, 'erwaehnung', m.toLowerCase()));
       }
     }
-    if (table === 'cards') logDemo(r.id, 'angelegt');
+    if (table === 'cards') { logDemo(r.id, 'angelegt'); demoFeedback(r, null); }
+    if (table === 'aktivitaeten') demoAktLog(r, null);
     persist();
     return copy(r);
   },
@@ -511,7 +534,8 @@ const demo = {
     if (!r) throw new Error('Eintrag nicht gefunden');
     const before = { ...r };
     Object.assign(r, patch, { updated_at: now() });
-    if (table === 'cards') logDemoUpdate(before, r);
+    if (table === 'cards') { logDemoUpdate(before, r); demoFeedback(r, before); }
+    if (table === 'aktivitaeten') demoAktLog(r, before);
     persist();
     return copy(r);
   },
@@ -535,7 +559,10 @@ const demo = {
       s.card_shares = s.card_shares.filter((x) => x.card_id !== id);
       s.card_events = s.card_events.filter((x) => x.card_id !== id);
       s.card_seen = s.card_seen.filter((x) => x.card_id !== id);
+      s.aktivitaeten = s.aktivitaeten.filter((x) => x.card_id !== id);
     }
+    if (table === 'persons') unlink('aktivitaeten', 'person_id');
+    if (table === 'organizations') unlink('aktivitaeten', 'org_id');
     if (table === 'persons') {
       unlink('cards', 'person_id');
       unlink('notes', 'person_id');

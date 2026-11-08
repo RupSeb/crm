@@ -120,6 +120,16 @@ function dueInfo(due) {
   return { label: date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }), cls: '' };
 }
 
+// Aktivitäten (29_aktivitaeten.sql): geplante Schritte an Deal, Kontakt oder Firma, wie in Pipedrive.
+// Die Wiedervorlage ist eine Aktivität der Art „wiedervorlage“.
+const AKT_ARTEN = [['wiedervorlage', 'Wiedervorlage', 'bell'], ['anruf', 'Anruf', 'phone'], ['mail', 'Mail', 'mail'],
+  ['termin', 'Termin', 'calendar'], ['aufgabe', 'Aufgabe', 'check']];
+const AKT = Object.fromEntries(AKT_ARTEN.map(([k, label, icon]) => [k, { label, icon }]));
+const aktName = (a) => (a.titel || '').trim() || AKT[a.art]?.label || 'Aktivität';
+const aktZeit = (a) => (a.uhrzeit ? String(a.uhrzeit).slice(0, 5) : '');
+const byAkt = (a, b) => a.faellig.localeCompare(b.faellig) || (aktZeit(a) || '99').localeCompare(aktZeit(b) || '99') || a.id - b.id;
+const AKT_SCHRITTE = [[0, 'Heute'], [1, 'Morgen'], [3, 'In 3 Tagen'], [7, 'In 1 Woche'], [14, 'In 2 Wochen']];
+
 // Spaltenart aus dem Namen: To-Dos, Ongoing, Feedback von Anderen, Zukünftig, Erledigt
 function stageKind(stage) {
   if (!stage) return null;
@@ -532,7 +542,8 @@ function Main({ session }) {
   const load = useCallback(async () => {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
-        card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude, antworten, postfach_neu, einstellungen] = await Promise.all([
+        card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude, antworten, postfach_neu, einstellungen,
+        aktivitaeten] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -549,6 +560,7 @@ function Main({ session }) {
         db.rpc('antworten_offen').catch(() => []),
         db.rpc('postfach_neu').catch(() => 0),
         db.list('nutzer_einstellungen').catch(() => []),
+        db.list('aktivitaeten').catch(() => []),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
@@ -559,7 +571,8 @@ function Main({ session }) {
       const cards = role === 'gast' ? allCards.filter((c) => mine.has(c.id) || myProjects.has(c.project_id)) : allCards;
       setData({ projects, stages, organizations, persons, cards, meetings, meeting_persons, events, event_persons,
         card_shares, role: role || 'owner', users: users || [], project_shares, card_events, card_seen, file_counts: file_counts || [], claude,
-        antworten: antworten || [], postfach_neu: postfach_neu || 0, einstellungen: einstellungen?.[0]?.werte || {} });
+        antworten: antworten || [], postfach_neu: postfach_neu || 0, einstellungen: einstellungen?.[0]?.werte || {},
+        aktivitaeten: aktivitaeten || [] });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -594,12 +607,74 @@ function Main({ session }) {
         setData((d) => ({ ...d, card_events: [...d.card_events.filter((x) => x.card_id !== cardId), ...rows] }));
       } catch { /* Verlauf ist nicht kritisch */ }
     };
+    // Die Datenbank legt beim Verschieben nach „Feedback“ selbst eine Wiedervorlage an (29_aktivitaeten.sql)
+    const reloadAkt = async (cardId) => {
+      try {
+        const rows = await db.list('aktivitaeten', { card_id: cardId });
+        setData((d) => ({ ...d, aktivitaeten: [...(d.aktivitaeten || []).filter((x) => x.card_id !== cardId), ...rows] }));
+      } catch { /* nicht kritisch */ }
+    };
     const put = (table, row) => setData((d) => {
       const list = d[table];
       const exists = list.some((x) => x.id === row.id);
       return { ...d, [table]: exists ? list.map((x) => (x.id === row.id ? row : x)) : [...list, row] };
     });
+    // Eine Aktivität am Deal gilt als Änderung am Deal (wie in 29_aktivitaeten.sql): „Antwort da“ verschwindet,
+    // der Verlauf zeigt den Schritt.
+    const touchCard = (cardId) => {
+      if (!cardId) return;
+      const now = new Date().toISOString();
+      setData((d) => ({ ...d, cards: d.cards.map((c) => (c.id === cardId ? { ...c, updated_at: now } : c)) }));
+      reloadHistory(cardId);
+    };
+    const aktAnlegen = async (row) => {
+      try {
+        const saved = await db.insert('aktivitaeten', { owner: me, ...row });
+        put('aktivitaeten', saved);
+        touchCard(saved.card_id);
+        return saved;
+      } catch (e) { fail(e); throw e; }
+    };
+    const aktAendern = async (a, fields) => {
+      setData((d) => ({ ...d, aktivitaeten: d.aktivitaeten.map((x) => (x.id === a.id ? { ...x, ...fields } : x)) }));
+      try {
+        const saved = await db.update('aktivitaeten', a.id, fields);
+        put('aktivitaeten', saved);
+        touchCard(saved.card_id);
+        return saved;
+      } catch (e) { fail(e); load(); return null; }
+    };
     return {
+      aktAnlegen,
+      aktAendern,
+      // Abhaken mit „Rückgängig“
+      async aktErledigt(a) {
+        await aktAendern(a, { erledigt_at: new Date().toISOString(), erledigt_von: me });
+        setToast({ text: `„${aktName(a)}“ erledigt`, undo: () => aktAendern(a, { erledigt_at: null, erledigt_von: null }) });
+      },
+      async aktLoeschen(a) {
+        try {
+          await db.remove('aktivitaeten', a.id);
+          setData((d) => ({ ...d, aktivitaeten: d.aktivitaeten.filter((x) => x.id !== a.id) }));
+          touchCard(a.card_id);
+        } catch (e) { fail(e); }
+      },
+      // „Wieder in 3 Tagen“: die offene Wiedervorlage des Deals verschieben, sonst eine neue anlegen.
+      // Ein altes Datum als Wiedervorlage (außerhalb von To-do und Ongoing) wird dabei geleert.
+      async wiederVorlegen(card, days) {
+        const faellig = addDays(todayStr(), days);
+        const d = dataRef.current;
+        const offen = (d?.aktivitaeten || []).filter((x) => x.card_id === card.id && !x.erledigt_at).sort(byAkt);
+        const wv = offen.find((x) => x.art === 'wiedervorlage');
+        if (wv) await aktAendern(wv, { faellig });
+        else await aktAnlegen({ card_id: card.id, art: 'wiedervorlage', faellig });
+        const kind = stageKind((d?.stages || []).find((s) => s.id === card.stage_id));
+        if (card.due_date && !isWorkList(kind)) {
+          setData((x) => ({ ...x, cards: x.cards.map((c) => (c.id === card.id ? { ...c, due_date: null } : c)) }));
+          try { put('cards', await db.update('cards', card.id, { due_date: null })); } catch (e) { fail(e); }
+        }
+        return faellig;
+      },
       load,
       fail,
       refreshCounts,
@@ -619,7 +694,7 @@ function Main({ session }) {
         try {
           const saved = id ? await db.update(table, id, fields) : await db.insert(table, fields);
           put(table, saved);
-          if (table === 'cards') reloadHistory(saved.id);
+          if (table === 'cards') { reloadHistory(saved.id); if (!id || 'stage_id' in fields) reloadAkt(saved.id); }
           return saved;
         } catch (e) { fail(e); throw e; }
       },
@@ -630,7 +705,7 @@ function Main({ session }) {
         try {
           const saved = await db.update(table, id, fields);
           put(table, saved);
-          if (table === 'cards') reloadHistory(id);
+          if (table === 'cards') { reloadHistory(id); if ('stage_id' in fields) reloadAkt(id); }
           return saved;
         } catch (e) { fail(e); load(); return null; }
       },
@@ -761,8 +836,22 @@ function Main({ session }) {
     const answerOf = new Map((data.antworten || [])
       .filter((a) => cardById.has(a.card_id) && ts(a.sent_at) > ts(cardById.get(a.card_id).updated_at))
       .map((a) => [a.card_id, a]));
+    // Offene Aktivitäten, früheste zuerst, und je Deal die Liste
+    const aktOffen = (data.aktivitaeten || []).filter((a) => !a.erledigt_at).sort(byAkt);
+    const aktOfCard = new Map();
+    aktOffen.forEach((a) => {
+      if (!a.card_id) return;
+      if (!aktOfCard.has(a.card_id)) aktOfCard.set(a.card_id, []);
+      aktOfCard.get(a.card_id).push(a);
+    });
+    // Eigene Aktivität ohne Deal: mir zugewiesen oder von mir angelegt
+    const aktMine = (a) => (a.zustaendig ? a.zustaendig.toLowerCase() === me : !a.owner || a.owner.toLowerCase() === me);
     return {
       answerOf,
+      aktOffen,
+      aktOfCard,
+      aktMine,
+      nextAkt: (cardId) => aktOfCard.get(cardId)?.[0] || null,
       sharesOf,
       projectSharesOf,
       historyOf,
@@ -1584,22 +1673,31 @@ const myOpen = (cards, me) => cards.filter((c) => !c.archived && (assigneesOf(c)
 // Die Wiedervorlagen sind das Nachhaken aus den übrigen Spalten (Feedback, Zukünftig, eigene). dueAll zählt für die Zahl
 // an „Übersicht“ und am App-Symbol trotzdem alles Fällige, auch To-dos.
 const isWorkList = (kind) => kind === 'todo' || kind === 'doing';
+// Seit 08.11.2026 mit Aktivitäten: Jeder Deal steht einmal da, sein nächster Schritt hängt an ihm (Sebastians Regel).
+// Datum eines Deals für die Wiedervorlagen ist seine früheste offene Aktivität, außerhalb von To-do und Ongoing
+// auch ein altes Datum am Deal. Aktivitäten ohne Deal (am Kontakt, an der Firma) stehen als eigene Zeile.
+// Einträge sind { card, date } oder { akt, date }.
 function followUpOf(open, idx) {
   const today = todayStr();
   const soon = addDays(today, 7);
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
+  const dateOf = (c) => [idx.nextAkt(c.id)?.faellig, isWorkList(kind(c)) ? null : c.due_date].filter(Boolean).sort()[0] || null;
+  const byDate = (a, b) => a.date.localeCompare(b.date) || (a.card ? byUpdatedDesc(a.card, b.card || a.card) : 0);
   const active = open.filter((c) => kind(c) !== 'done');
-  const byDue = (a, b) => a.due_date.localeCompare(b.due_date) || byUpdatedDesc(a, b);
   const answered = active.filter((c) => idx.answerOf.has(c.id))
     .sort((a, b) => ts(idx.answerOf.get(b.id).sent_at) - ts(idx.answerOf.get(a.id).sent_at));
   const rest = active.filter((c) => !idx.answerOf.has(c.id));
-  const dueAll = rest.filter((c) => c.due_date && c.due_date <= today);
   const follow = rest.filter((c) => !isWorkList(kind(c)));
-  const due = follow.filter((c) => c.due_date && c.due_date <= today).sort(byDue);
-  const next = follow.filter((c) => c.due_date && c.due_date > today && c.due_date <= soon).sort(byDue);
-  const waiting = follow.filter((c) => kind(c) === 'waiting' && !(c.due_date && c.due_date <= soon))
-    .sort((a, b) => (a.due_date || '9').localeCompare(b.due_date || '9') || ts(a.updated_at) - ts(b.updated_at));
-  return { answered, due, next, waiting, dueAll };
+  const entries = [...follow.map((c) => ({ card: c, date: dateOf(c) })),
+    ...idx.aktOffen.filter((a) => !a.card_id && idx.aktMine(a)).map((a) => ({ akt: a, date: a.faellig }))];
+  const due = entries.filter((e) => e.date && e.date <= today).sort(byDate);
+  const next = entries.filter((e) => e.date && e.date > today && e.date <= soon).sort(byDate);
+  const waiting = follow.filter((c) => kind(c) === 'waiting' && !(dateOf(c) && dateOf(c) <= soon))
+    .sort((a, b) => (dateOf(a) || '9').localeCompare(dateOf(b) || '9') || ts(a.updated_at) - ts(b.updated_at));
+  // Für die Zahl an „Übersicht“: alles Fällige, je Deal einmal, auch To-dos mit Frist oder fälliger Aktivität
+  const workDue = rest.filter((c) => isWorkList(kind(c))
+    && ((c.due_date && c.due_date <= today) || (idx.nextAkt(c.id)?.faellig || '9') <= today));
+  return { answered, due, next, waiting, dueAll: [...due, ...workDue], dateOf };
 }
 
 function FollowUpTile({ open }) {
@@ -1609,20 +1707,45 @@ function FollowUpTile({ open }) {
   const shownWaiting = all ? waiting : waiting.slice(0, 6);
   const head = [answered.length > 0 && html`<span class="count answer-count">${answered.length} ${answered.length === 1 ? 'Antwort' : 'Antworten'}</span>`,
     due.length > 0 && html`<span class="count">${due.length} fällig</span>`];
+  // Deal-Zeile oder eigene Zeile für eine Aktivität ohne Deal
+  const row = (pre) => (e) => (e.card ? html`<${TodoRow} key=${pre + 'c' + e.card.id} card=${e.card} follow />`
+    : html`<${AktRow} key=${pre + 'a' + e.akt.id} akt=${e.akt} />`);
   return html`<${Tile} id="wiedervorlagen" cls=${due.length || answered.length ? 'has-due' : ''}
       title=${html`Wiedervorlagen ${head}`}>
     ${answered.length > 0 && html`<div class="todo-group"><h3 class="group-answer">Antwort da <span class="count">${answered.length}</span></h3>
       ${answered.map((c) => html`<${TodoRow} key=${'a' + c.id} card=${c} follow answer=${idx.answerOf.get(c.id)} />`)}</div>`}
     ${due.length > 0 && html`<div class="todo-group"><h3 class="group-late">Fällig <span class="count">${due.length}</span></h3>
-      ${due.map((c) => html`<${TodoRow} key=${'f' + c.id} card=${c} follow />`)}</div>`}
+      ${due.map(row('f'))}</div>`}
     ${next.length > 0 && html`<div class="todo-group"><h3 class="group-normal">Nächste 7 Tage <span class="count">${next.length}</span></h3>
-      ${next.map((c) => html`<${TodoRow} key=${'n' + c.id} card=${c} follow />`)}</div>`}
+      ${next.map(row('n'))}</div>`}
     ${waiting.length > 0 && html`<div class="todo-group"><h3 class="group-normal">Wartet auf Antwort <span class="count">${waiting.length}</span></h3>
       ${shownWaiting.map((c) => html`<${TodoRow} key=${'w' + c.id} card=${c} waiting />`)}
       ${waiting.length > 6 && html`<button class="btn link sm" onClick=${() => setAll(!all)}>${all ? 'Weniger anzeigen' : `Alle ${waiting.length} anzeigen`}</button>`}</div>`}
-    ${!answered.length && !due.length && !next.length && !waiting.length && html`<p class="muted small">Nichts zum Nachhaken. Schieb eine Aufgabe nach
-      „Feedback von Anderen“ oder setz im Deal „Wieder vorlegen“, dann kommt sie hier rechtzeitig wieder hoch.</p>`}
+    ${!answered.length && !due.length && !next.length && !waiting.length && html`<p class="muted small">Nichts zum Nachhaken. Leg im Deal oder beim
+      Kontakt eine Aktivität an oder schieb eine Aufgabe nach „Feedback von Anderen“, dann kommt sie hier rechtzeitig wieder hoch.</p>`}
   <//>`;
+}
+
+// Aktivität ohne Deal (am Kontakt oder an der Firma) als eigene Zeile in den Wiedervorlagen
+function AktRow({ akt }) {
+  const { idx, actions } = useApp();
+  const p = idx.person.get(akt.person_id);
+  const o = idx.org.get(akt.org_id) || idx.org.get(p?.org_id);
+  const href = p ? `#/kontakt/${p.id}` : o ? `#/firma/${o.id}` : null;
+  const di = dueInfo(akt.faellig);
+  const meta = [AKT[akt.art]?.label, p?.name, o?.name].filter(Boolean).join(' · ');
+  const later = (e, days) => { e.stopPropagation(); actions.aktAendern(akt, { faellig: addDays(todayStr(), days) }); };
+  return html`<div class="todo akt-todo" role="link" tabindex="0" onClick=${() => href && go(href)}
+      onKeyDown=${(e) => { if (e.key === 'Enter' && href) go(href); }}>
+    <button class="check" type="button" onClick=${(e) => { e.stopPropagation(); actions.aktErledigt(akt); }}
+      aria-label="Aktivität erledigt" title="Aktivität erledigt"><${Icon} n="check" /></button>
+    <div class="todo-main">
+      <div class="todo-title"><span class="akt-ico"><${Icon} n=${AKT[akt.art]?.icon || 'bell'} /></span>${aktName(akt)}</div>
+      <div class="todo-meta"><span>${meta}</span>${di && html`<span class="badges"><span class=${'due ' + di.cls}>${di.label}${aktZeit(akt) ? ` ${aktZeit(akt)}` : ''}</span></span>`}</div>
+      <div class="todo-later" role="group" aria-label="Verschieben"><span>Wieder in</span>
+        ${FOLLOW_STEPS.map(([d, l]) => html`<button type="button" key=${d} onClick=${(e) => later(e, d)}>${l}</button>`)}</div>
+    </div>
+  </div>`;
 }
 
 // Team: was andere seit meinem letzten Blick geändert haben, und was bei anderen liegt
@@ -1653,8 +1776,10 @@ function Overview() {
 
   // Eine Gruppe je Projekt, in der Reihenfolge der Projekte (Spalte sort). Darin nach Dringlichkeit in der
   // Reihenfolge von prioRank (hoch, mittel, ohne, niedrig), bei gleicher Dringlichkeit das zuerst Fällige oben.
+  // Datum zum Sortieren: Frist oder nächste Aktivität, was früher kommt
+  const whenOf = (c) => [c.due_date, idx.nextAkt(c.id)?.faellig].filter(Boolean).sort()[0] || '9';
   const sections = projects.map((p) => [p, todo.filter((c) => c.project_id === p.id)
-    .sort((a, b) => prioRank(a) - prioRank(b) || (a.due_date || '9').localeCompare(b.due_date || '9') || byUpdatedDesc(a, b))])
+    .sort((a, b) => prioRank(a) - prioRank(b) || whenOf(a).localeCompare(whenOf(b)) || byUpdatedDesc(a, b))])
     .filter(([, list]) => list.length > 0);
   const recent = [...meetings].sort(byHeldDesc).slice(0, 6);
   const today = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -1728,7 +1853,7 @@ function Overview() {
     // Was heute fällig oder überfällig ist, steht nie hinter „Alle anzeigen“, es kommt ja nicht mehr doppelt
     // bei den Wiedervorlagen vor.
     const limit = Math.max(8, list.filter((c) => prioRank(c) < 2).length);
-    const dueNow = (c) => c.due_date && c.due_date <= todayStr();
+    const dueNow = (c) => whenOf(c) <= todayStr();
     const collapsed = list.filter((c, i) => i < limit || dueNow(c));
     const shown = showAll[p.id] ? list : collapsed;
     return html`<div class="todo-group" key=${p.id} style=${`--pc:${p.color}`}>
@@ -1849,16 +1974,18 @@ function TodoRow({ card, waiting, follow, noProject, answer }) {
     ? [noProject ? '' : pr?.name, `${answer.from_name || answer.from_email} hat ${relDate(answer.sent_at).replace(/^\d/, 'am $&')} geschrieben`].filter(Boolean).join(' · ')
     : [noProject ? '' : pr?.name, follow ? idx.stage.get(card.stage_id)?.name : '', person?.name,
       waiting ? `seit ${relDate(card.updated_at).replace(/^vor /, '')}` : ''].filter(Boolean).join(' · ');
-  // Wiedervorlage ab heute neu setzen, z. B. nach dem Nachhaken
+  // Wiedervorlage ab heute neu setzen, z. B. nach dem Nachhaken. Seit 08.11.2026 als Aktivität am Deal.
   async function later(e, days) {
     e.stopPropagation();
-    const due = addDays(todayStr(), days);
-    await actions.patch('cards', card.id, { due_date: due });
+    const due = await actions.wiederVorlegen(card, days);
     actions.notify(`„${card.title}“ kommt ${dueInfo(due)?.label || 'später'} wieder.`);
   }
+  // In den Wiedervorlagen hakt der Kreis die nächste Aktivität ab, sonst (und in „Zu erledigen“) den Deal
+  const akt = follow ? idx.nextAkt(card.id) : null;
 
   async function complete(e) {
     e.stopPropagation();
+    if (akt) { actions.aktErledigt(akt); return; }
     const doneStage = stages.find((s) => s.project_id === card.project_id && s.is_done);
     if (!doneStage) return;
     const before = card.stage_id;
@@ -1870,7 +1997,8 @@ function TodoRow({ card, waiting, follow, noProject, answer }) {
   return html`<div class=${'todo' + (done ? ' done' : '')} role="link" tabindex="0"
       onClick=${() => go(`#/karte/${card.id}`)} onKeyDown=${(e) => { if (e.key === 'Enter') go(`#/karte/${card.id}`); }}
       style=${`--pc:${pr?.color || '#888'}`}>
-    <button class="check" type="button" onClick=${complete} aria-label="Als erledigt markieren" title="Erledigt"><${Icon} n="check" /></button>
+    <button class="check" type="button" onClick=${complete} aria-label=${akt ? `${aktName(akt)} erledigt` : 'Als erledigt markieren'}
+      title=${akt ? `${aktName(akt)} erledigt, der Deal bleibt` : 'Erledigt'}><${Icon} n="check" /></button>
     <div class="todo-main">
       <div class="todo-title">${card.title}</div>
       <div class="todo-meta"><span class="dot"></span><span>${meta}</span><${CardBadges} card=${card} noAnswer=${!!answer} /><${TeamMarks} card=${card} /></div>
@@ -2161,9 +2289,15 @@ function CardBadges({ card, noAnswer }) {
   const due = dueInfo(card.due_date);
   const p = PRIO[card.priority];
   const a = !noAnswer && idx.answerOf.get(card.id);
-  if (!due && !p && !a) return null;
+  // Nächste Aktivität des Deals, wie in Pipedrive: Symbol der Art und wann, rot wenn überfällig
+  const akt = idx.nextAkt(card.id);
+  const ai = akt && dueInfo(akt.faellig);
+  const mehr = akt ? (idx.aktOfCard.get(card.id) || []).length - 1 : 0;
+  if (!due && !p && !a && !akt) return null;
   return html`<span class="badges">
     ${a && html`<span class="badge answer-badge" title=${`${a.from_name || a.from_email}: ${a.subject || 'ohne Betreff'}`}>Antwort da</span>`}
+    ${akt && html`<span class=${'akt-badge ' + ai.cls} title=${`${AKT[akt.art]?.label}${akt.titel ? `: ${akt.titel}` : ''}${mehr > 0 ? ` (dazu ${mehr} weitere)` : ''}`}>
+      <${Icon} n=${AKT[akt.art]?.icon || 'bell'} />${ai.label}${aktZeit(akt) ? ` ${aktZeit(akt)}` : ''}</span>`}
     ${p && html`<span class=${'prio prio-' + card.priority}>${p.label}</span>`}
     ${due && html`<span class=${'due ' + due.cls}>${due.label}</span>`}
   </span>`;
@@ -2287,12 +2421,24 @@ function historyText(e, idx) {
     case 'notiz': return 'hat eine Notiz geschrieben';
     case 'erwaehnung': return `hat ${idx.userName.get((d || '').toLowerCase()) || d} erwähnt`;
     case 'datei': return `hat „${d}“ hochgeladen`;
+    // Aktivitäten (29_aktivitaeten.sql), detail „art|datum|text“ bzw. „art|text“
+    case 'aktivitaet':
+    case 'aktivitaet_verschoben': {
+      const [art, tag, text] = String(d || '').split('|');
+      const was = text || AKT[art]?.label || 'Aktivität';
+      const wann = tag ? new Date(tag + 'T12:00').toLocaleDateString('de-DE') : '';
+      return e.kind === 'aktivitaet' ? `hat „${was}“ für ${wann} geplant` : `hat „${was}“ auf ${wann} verschoben`;
+    }
+    case 'aktivitaet_erledigt': {
+      const [art, text] = String(d || '').split('|');
+      return `hat „${text || AKT[art]?.label || 'Aktivität'}“ erledigt`;
+    }
     default: return e.kind;
   }
 }
 
 function CardSheet({ id, query }) {
-  const { idx, projects, stages, persons, organizations, actions, isGuest, users, me, project_shares } = useApp();
+  const { idx, projects, stages, persons, organizations, actions, isGuest, users, me, project_shares, aktivitaeten } = useApp();
   const kannSenden = useKannSenden();
   const isNew = id === 'neu';
   const card = isNew ? null : idx.card.get(Number(id));
@@ -2390,11 +2536,19 @@ function CardSheet({ id, query }) {
   // „Warte auf Antwort“: nach „Feedback …“ schieben und die Wiedervorlage setzen, beides sofort gespeichert
   const waitStage = projStages.find((s) => stageKind(s) === 'waiting');
   const toWait = waitStage && form.stage_id !== waitStage.id;
-  function followUp(days) {
-    const due = addDays(todayStr(), days);
+  // „Wieder vorlegen in …“: seit 08.11.2026 eine Aktivität „Wiedervorlage“ am Deal. Erst die Aktivität,
+  // dann die Spalte, sonst legt die Datenbank beim Verschieben nach „Feedback“ noch eine in 7 Tagen an.
+  async function followUp(days) {
+    if (!card) return;
     const stageId = toWait ? waitStage.id : form.stage_id;
-    setForm((f) => ({ ...f, due_date: due, stage_id: stageId }));
-    if (card && form.project_id === card.project_id) actions.patch('cards', card.id, { due_date: due, stage_id: stageId });
+    const due = await actions.wiederVorlegen(card, days);
+    // Ein altes Datum als Wiedervorlage hat wiederVorlegen am Deal geleert, das Formular zieht nach
+    if (card.due_date && !isWorkList(stageKind(idx.stage.get(card.stage_id)))) setForm((f) => ({ ...f, due_date: null }));
+    if (stageId !== card.stage_id && form.project_id === card.project_id) {
+      setForm((f) => ({ ...f, stage_id: stageId }));
+      await actions.patch('cards', card.id, { stage_id: stageId });
+    }
+    actions.notify(`Wiedervorlage ${dueInfo(due)?.label || ''} angelegt.`);
   }
   function pickPerson(pid) {
     const p = idx.person.get(pid);
@@ -2517,10 +2671,11 @@ function CardSheet({ id, query }) {
         <label class="field"><span>Fällig am</span>
           <input type="date" value=${form.due_date || ''} onInput=${(e) => set('due_date', e.target.value || null)} /></label>
       </div>
-      <div class="field"><span>${toWait ? 'Warte auf Antwort, wieder vorlegen' : 'Wieder vorlegen'}</span>
+      ${card && html`<div class="field"><span>${toWait ? 'Warte auf Antwort, wieder vorlegen' : 'Wieder vorlegen'}</span>
         <div class="seg wrap">${FOLLOW_STEPS.map(([d, l]) => html`<button type="button" key=${d} class="seg-btn" onClick=${() => followUp(d)}>in ${l}</button>`)}</div>
-        ${toWait && html`<p class="muted small">Schiebt die Aufgabe nach „${waitStage.name}“ und setzt das Datum. Sie kommt dann unter „Wiedervorlagen“ wieder hoch.</p>`}
-      </div>
+        <p class="muted small">${toWait ? `Schiebt die Aufgabe nach „${waitStage.name}“ und legt` : 'Legt'} eine Aktivität „Wiedervorlage“ an
+          oder verschiebt die vorhandene. Sie steht unten unter „Aktivitäten“ und kommt rechtzeitig auf der Übersicht hoch.</p>
+      </div>`}
       ${users.length > 1 && html`<div class="field"><span>Zuständig</span>
         <${MultiPick} options=${assigneeOptions} value=${form.assignees} onToggle=${toggleAssignee} empty="Niemand" /></div>`}
       <div class="field"><span>Labels</span><${InlineLabels} value=${form.labels} onChange=${setLabels} /></div>
@@ -2552,11 +2707,112 @@ function CardSheet({ id, query }) {
           <span class="muted">${fullDate(e.at)}</span> <strong>${!e.actor ? 'System' : e.actor.toLowerCase() === me ? 'Du' : idx.userName.get(e.actor.toLowerCase()) || e.actor}</strong> ${historyText(e, idx)}</div>`)}
       </details>`}
     </form>
+    ${card && html`<${AktivitaetenPanel} list=${aktivitaeten.filter((a) => a.card_id === card.id)} neu=${{ card_id: card.id }} />`}
     ${card && html`<${NotesPanel} filter=${{ card_id: card.id }} pendingRef=${noteRef}
       defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
     ${mailPeople.length > 0 && html`<${EmailsPanel} personIds=${mailPeople} />`}
     </div>
   <//>`;
+}
+
+// Aktivitäten an Deal, Kontakt oder Firma (29_aktivitaeten.sql), wie in Pipedrive: oben das Geplante mit Haken,
+// darunter aufklappbar das Erledigte. Nach dem Abhaken fragt der Bereich nach dem nächsten Schritt.
+// list: alle Aktivitäten, die hier gelten (auch erledigte). neu: Verknüpfung für neue ({ card_id } oder { person_id } …).
+// mitDeal: bei Kontakt und Firma steht dabei, an welchem Deal oder Kontakt die Aktivität hängt.
+function AktivitaetenPanel({ list, neu, mitDeal = false }) {
+  const { idx, actions } = useApp();
+  const [form, setForm] = useState(null);
+  const [weiter, setWeiter] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const textRef = useRef(null);
+  useEffect(() => { if (form) textRef.current?.focus(); }, [form?.id, form === null]);
+  const today = todayStr();
+  const offen = list.filter((a) => !a.erledigt_at).sort(byAkt);
+  const erledigt = list.filter((a) => a.erledigt_at).sort((a, b) => ts(b.erledigt_at) - ts(a.erledigt_at));
+  const start = (a, art = 'wiedervorlage') => setForm(a
+    ? { id: a.id, art: a.art, faellig: a.faellig, uhrzeit: aktZeit(a), titel: a.titel || '' }
+    : { art, faellig: addDays(today, 3), uhrzeit: '', titel: '' });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  async function save() {
+    if (!form.faellig || busy) return;
+    const row = { art: form.art, faellig: form.faellig, uhrzeit: form.uhrzeit || null, titel: form.titel.trim() || null };
+    setBusy(true);
+    try {
+      if (form.id) await actions.aktAendern(list.find((x) => x.id === form.id), row);
+      else await actions.aktAnlegen({ ...neu, ...row });
+      setForm(null);
+      setWeiter(false);
+    } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
+  }
+  async function done(a) {
+    await actions.aktErledigt(a);
+    setWeiter(true);
+  }
+  async function remove() {
+    const a = list.find((x) => x.id === form.id);
+    if (!a || !confirm(`„${aktName(a)}“ löschen?`)) return;
+    await actions.aktLoeschen(a);
+    setForm(null);
+  }
+  const keys = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { e.stopPropagation(); setForm(null); }
+  };
+  // Wo hängt die Aktivität? Bei Kontakt und Firma der Deal oder der Kontakt
+  const bezug = (a) => {
+    if (!mitDeal) return null;
+    const c = a.card_id && idx.card.get(a.card_id);
+    if (c) return html`<a class="akt-bezug" href=${`#/karte/${c.id}`} onClick=${(e) => e.stopPropagation()}>${c.title}</a>`;
+    const p = a.person_id && idx.person.get(a.person_id);
+    return p && neu.person_id !== p.id ? html`<a class="akt-bezug" href=${`#/kontakt/${p.id}`} onClick=${(e) => e.stopPropagation()}>${p.name}</a>` : null;
+  };
+  return html`<section class="panel akt-panel">
+    <h3><${Icon} n="bell" />Aktivitäten ${offen.length > 0 && html`<span class="count">${offen.length}</span>`}
+      ${!form && html`<button type="button" class="btn sm ghost akt-add" onClick=${() => start()}><${Icon} n="plus" />Aktivität</button>`}</h3>
+    ${weiter && !form && html`<div class="akt-weiter"><span>Erledigt. Nächsten Schritt planen?</span>
+      <button type="button" class="btn sm primary" onClick=${() => { setWeiter(false); start(); }}>Planen</button>
+      <button type="button" class="btn sm link" onClick=${() => setWeiter(false)}>Nein</button></div>`}
+    ${form && html`<div class="akt-form">
+      <div class="seg wrap" role="group" aria-label="Art">${AKT_ARTEN.map(([k, l, i]) => html`<button type="button" key=${k}
+        class=${'seg-btn' + (form.art === k ? ' on' : '')} onClick=${() => set('art', k)}><${Icon} n=${i} />${l}</button>`)}</div>
+      <div class="akt-when-pick">
+        ${AKT_SCHRITTE.map(([d, l]) => html`<button type="button" key=${d} class=${'chip toggle' + (form.faellig === addDays(today, d) ? ' on' : '')}
+          onClick=${() => set('faellig', addDays(today, d))}>${l}</button>`)}
+        <input type="date" value=${form.faellig} onInput=${(e) => set('faellig', e.target.value)} aria-label="Datum" />
+        <input type="time" value=${form.uhrzeit} onInput=${(e) => set('uhrzeit', e.target.value)} aria-label="Uhrzeit, wenn nötig" title="Uhrzeit, wenn nötig" />
+      </div>
+      <input ref=${textRef} class="akt-text" value=${form.titel} onInput=${(e) => set('titel', e.target.value)} onKeyDown=${keys}
+        placeholder=${`Worum geht es? Leer heißt „${AKT[form.art]?.label}“`} />
+      <div class="form-actions">
+        <button type="button" class="btn primary sm" disabled=${busy || !form.faellig} onClick=${save}>${form.id ? 'Speichern' : 'Anlegen'}</button>
+        <button type="button" class="btn link sm" onClick=${() => setForm(null)}>Abbrechen</button>
+        ${form.id && html`<span class="spacer"></span><button type="button" class="btn ghost sm danger" onClick=${remove}>Löschen</button>`}
+      </div>
+    </div>`}
+    ${offen.map((a) => {
+    const di = dueInfo(a.faellig);
+    return html`<div class=${'akt-row' + (form?.id === a.id ? ' editing' : '')} key=${a.id}>
+        <button type="button" class="check" onClick=${() => done(a)} title="Erledigt" aria-label=${`${aktName(a)} erledigt`}><${Icon} n="check" /></button>
+        <button type="button" class="akt-main" onClick=${() => start(a)} title="Ändern">
+          <span class="akt-ico"><${Icon} n=${AKT[a.art]?.icon || 'bell'} /></span>
+          <span class="akt-title">${aktName(a)}</span>
+          <span class=${'akt-when ' + (di?.cls || '')}>${di?.label}${aktZeit(a) ? ` ${aktZeit(a)}` : ''}</span>
+        </button>
+        ${bezug(a)}
+      </div>`;
+  })}
+    ${!offen.length && !form && !weiter && html`<p class="muted small">Nichts geplant. Eine Aktivität ist der nächste Schritt mit Datum,
+      zum Beispiel eine Wiedervorlage oder ein Anruf. Fällige stehen auf der Übersicht.</p>`}
+    ${erledigt.length > 0 && html`<details class="more akt-done"><summary>Erledigt <span class="count">${erledigt.length}</span></summary>
+      ${erledigt.slice(0, 30).map((a) => html`<div class="akt-row done" key=${a.id}>
+        <span class="akt-ico"><${Icon} n=${AKT[a.art]?.icon || 'bell'} /></span>
+        <span class="akt-title">${aktName(a)}</span>
+        <span class="muted small">${shortDate(a.erledigt_at)}</span>
+        ${bezug(a)}
+        <button type="button" class="btn link sm" onClick=${() => actions.aktAendern(a, { erledigt_at: null, erledigt_von: null })}>Wieder öffnen</button>
+      </div>`)}
+    </details>`}
+  </section>`;
 }
 
 function CardsPanel({ cards, newHref }) {
@@ -4237,7 +4493,7 @@ function PersonRow({ person }) {
 }
 
 function PersonPage({ person: p }) {
-  const { idx, cards, actions } = useApp();
+  const { idx, cards, actions, aktivitaeten } = useApp();
   if (!p) return html`<${NotFound} what="Kontakt" href="#/kontakte" />`;
   const org = idx.org.get(p.org_id);
   const pcards = cards.filter((c) => c.person_id === p.id);
@@ -4271,6 +4527,8 @@ function PersonPage({ person: p }) {
     </div>`}
     <div class="detail-grid">
       <div class="detail-side">
+        <${AktivitaetenPanel} mitDeal neu=${{ person_id: p.id }}
+          list=${aktivitaeten.filter((a) => a.person_id === p.id || (a.card_id && idx.card.get(a.card_id)?.person_id === p.id))} />
         <${CardsPanel} cards=${pcards} newHref=${`#/karte/neu?kontakt=${p.id}`} />
         <${EventsPanel} personIds=${[p.id]} />
         <${MeetingsPanel} ids=${idx.meetingsOf.get(p.id) || []} />
@@ -4668,7 +4926,7 @@ function OrgsList() {
 }
 
 function OrgPage({ org: o }) {
-  const { persons, cards, idx, actions } = useApp();
+  const { persons, cards, idx, actions, aktivitaeten } = useApp();
   if (!o) return html`<${NotFound} what="Firma" href="#/firmen" />`;
   const people = persons.filter((p) => p.org_id === o.id).sort(byName);
   const ocards = cards.filter((c) => c.org_id === o.id);
@@ -4700,6 +4958,9 @@ function OrgPage({ org: o }) {
             ${(p.phones[0] || p.emails[0]) && html`<div class="row-sub">${p.phones[0] || p.emails[0]}</div>`}</div></a>`)}
           ${people.length === 0 && html`<p class="muted small">Keine Kontakte.</p>`}
         </section>
+        <${AktivitaetenPanel} mitDeal neu=${{ org_id: o.id }}
+          list=${aktivitaeten.filter((a) => a.org_id === o.id || (a.card_id && idx.card.get(a.card_id)?.org_id === o.id)
+            || (a.person_id && idx.person.get(a.person_id)?.org_id === o.id))} />
         <${CardsPanel} cards=${ocards} newHref=${`#/karte/neu?firma=${o.id}`} />
         <${EventsPanel} personIds=${people.map((p) => p.id)} />
         <${MeetingsPanel} ids=${people.flatMap((p) => idx.meetingsOf.get(p.id) || [])} />

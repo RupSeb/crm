@@ -8,7 +8,7 @@ export function demoSeed() {
   const s = {
     projects: [], stages: [], organizations: [], persons: [], cards: [], notes: [],
     meetings: [], meeting_persons: [], emails: [], email_persons: [], events: [], event_persons: [], card_shares: [],
-    project_shares: [], card_events: [], card_seen: [],
+    project_shares: [], card_events: [], card_seen: [], aktivitaeten: [],
   };
 
   const projects = [['Vertrieb', '#7fa7c9'], ['Objekte', '#d98b4f'], ['Allgemein', '#a9b4ae'], ['Kooperationen', '#b08fd6']];
@@ -151,6 +151,20 @@ export function demoSeed() {
   // Letzter Blick ins Postfach vor 6 Stunden: Annas Mail von heute ist neu
   s.nutzer_gesehen = [{ id: id(), owner: 'demo@beispiel.de', bereich: 'postfach', at: ago(0, 6) }];
   s.nachfass_aus = [];
+  // Aktivitäten (29_aktivitaeten.sql): am To-do ein Anruf morgen, am wartenden Deal eine Wiedervorlage und eine erledigte Mail,
+  // am Kontakt ohne Deal ein Anruf heute. Die Wiedervorlage am geteilten Rahmenvertrag ersetzt dort das Datum.
+  const akt = (extra) => ({
+    id: id(), owner: 'demo@beispiel.de', card_id: null, person_id: null, org_id: null, art: 'wiedervorlage', titel: null,
+    uhrzeit: null, zustaendig: null, erledigt_at: null, erledigt_von: null, created_at: ago(2), updated_at: ago(2), ...extra,
+  });
+  rahmen.due_date = null;
+  s.aktivitaeten = [
+    akt({ card_id: angebot.id, art: 'anruf', titel: 'Rückfragen zum Angebot', faellig: inDays(1), uhrzeit: '10:00' }),
+    akt({ card_id: vertrag.id, art: 'wiedervorlage', faellig: inDays(2) }),
+    akt({ card_id: vertrag.id, art: 'mail', titel: 'Entwurf geschickt', faellig: inDays(-6), erledigt_at: ago(6), erledigt_von: 'demo@beispiel.de' }),
+    akt({ card_id: rahmen.id, art: 'wiedervorlage', faellig: inDays(4), owner: 'demo@beispiel.de' }),
+    akt({ person_id: eva.id, art: 'anruf', titel: 'Besichtigungstermin abstimmen', faellig: inDays(0) }),
+  ];
   // Termine heute und in den nächsten Tagen, Uhrzeit in Ortszeit
   const at = (days, hour, min = 0) => {
     const d = new Date();
