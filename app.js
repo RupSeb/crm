@@ -97,7 +97,7 @@ const fullDate = (iso) => new Date(iso).toLocaleString('de-DE', {
   day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
 });
 
-// Dringlichkeit und Fälligkeit von Aufgaben
+// Dringlichkeit von Aufgaben. dueInfo beschriftet das Datum einer Aktivität (heute, morgen, überfällig).
 const PRIO = {
   hoch: { label: 'Hoch', rank: 0 },
   mittel: { label: 'Mittel', rank: 1 },
@@ -694,19 +694,12 @@ function Main({ session }) {
         } catch (e) { fail(e); }
       },
       // „Wieder in 3 Tagen“: die offene Wiedervorlage des Deals verschieben, sonst eine neue anlegen.
-      // Ein altes Datum als Wiedervorlage (außerhalb von To-do und Ongoing) wird dabei geleert.
       async wiederVorlegen(card, days) {
         const faellig = addDays(todayStr(), days);
-        const d = dataRef.current;
-        const offen = (d?.aktivitaeten || []).filter((x) => x.card_id === card.id && !x.erledigt_at).sort(byAkt);
+        const offen = (dataRef.current?.aktivitaeten || []).filter((x) => x.card_id === card.id && !x.erledigt_at).sort(byAkt);
         const wv = offen.find((x) => x.art === 'wiedervorlage');
         if (wv) await aktAendern(wv, { faellig });
         else await aktAnlegen({ card_id: card.id, art: 'wiedervorlage', faellig });
-        const kind = stageKind((d?.stages || []).find((s) => s.id === card.stage_id));
-        if (card.due_date && !isWorkList(kind)) {
-          setData((x) => ({ ...x, cards: x.cards.map((c) => (c.id === card.id ? { ...c, due_date: null } : c)) }));
-          try { put('cards', await db.update('cards', card.id, { due_date: null })); } catch (e) { fail(e); }
-        }
         return faellig;
       },
       // Sales (32_verkauf.sql): Wert, Status, Verlustgrund oder Abschlussdatum eines Deals setzen.
@@ -826,7 +819,10 @@ function Main({ session }) {
     // Derselbe Termin aus mehreren Kalendern (gleiche iCal-ID und Startzeit) nur einmal zeigen
     const seen = new Map();
     const calendarsOf = new Map();
-    [...data.events].sort((a, b) => ts(a.start_at) - ts(b.start_at) || a.id - b.id).forEach((e) => {
+    // Ausgeblendete Kalender (Einstellungen → Kalender, je Person auf allen Geräten) zeigt die App nirgends
+    const kalenderAus = new Set(data.einstellungen?.kalender_aus || []);
+    const alleTermine = data.events.filter((e) => !kalenderAus.has(e.calendar_id));
+    [...alleTermine].sort((a, b) => ts(a.start_at) - ts(b.start_at) || a.id - b.id).forEach((e) => {
       const k = (e.ical_uid || 'e' + e.id) + '|' + e.start_at;
       if (!seen.has(k)) seen.set(k, e);
       const first = seen.get(k);
@@ -835,7 +831,7 @@ function Main({ session }) {
     });
     const events = [...seen.values()];
     const eventIds = new Map([...seen.entries()].map(([k, e]) => [k, e.id]));
-    const eventOfRaw = new Map(data.events.map((e) => [e.id, eventIds.get((e.ical_uid || 'e' + e.id) + '|' + e.start_at)]));
+    const eventOfRaw = new Map(alleTermine.map((e) => [e.id, eventIds.get((e.ical_uid || 'e' + e.id) + '|' + e.start_at)]));
     const eventsOf = new Map();
     const guestsOf = new Map();
     data.event_persons.forEach((l) => {
@@ -962,7 +958,9 @@ function Main({ session }) {
 
   const me = (session?.user?.email || '').toLowerCase();
   const isGuest = data.role === 'gast';
-  const ctx = { ...data, idx, actions, isMobile, session, me, isGuest };
+  // Archivierte Projekte (35_projekt_archiv.sql) stehen in keiner Auswahl, ihre Namen kennt idx.project weiter
+  const ctx = { ...data, projects: data.projects.filter((p) => !p.archiviert), alleProjekte: data.projects,
+    idx, actions, isMobile, session, me, isGuest };
   const renderPage = ([s, id, sub]) => {
     switch (s) {
       case 'board': return html`<${Board} projectId=${id} archiv=${sub === 'archiv'} />`;
@@ -1302,6 +1300,53 @@ function TerminLinkSettings() {
   </div>`;
 }
 
+// Kalender ein- und ausblenden (Wunsch 13.11.2026, Q96). Gilt je Person auf allen Geräten (nutzer_einstellungen.kalender_aus).
+// Ausgeblendete Kalender stehen nirgends: nicht im Kalender, nicht in der Übersicht, nicht beim Kontakt, nicht beim Einladen.
+function KalenderSettings() {
+  const { events, einstellungen, actions } = useApp();
+  const aus = new Set(einstellungen.kalender_aus || []);
+  const kalender = [...new Map(events.map((e) => [e.calendar_id, e.calendar_name || e.calendar_id])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], 'de'));
+  if (!kalender.length) return null;
+  async function umschalten(id) {
+    const neu = aus.has(id) ? [...aus].filter((x) => x !== id) : [...aus, id];
+    try { await actions.saveEinstellungen({ kalender_aus: neu }); } catch { /* Meldung kommt über fail */ }
+  }
+  return html`<div class="field"><span>Kalender</span>
+    <div class="chips">${kalender.map(([id, name]) => html`<button type="button" key=${id}
+      class=${'chip toggle' + (aus.has(id) ? '' : ' on')} title=${id} onClick=${() => umschalten(id)}>${name}</button>`)}</div>
+    <p class="muted small">Ausgeschaltete Kalender zeigt das CRM nirgends mehr, auf allen deinen Geräten. Abgeglichen werden sie weiter, Einschalten holt sie sofort zurück.</p>
+  </div>`;
+}
+
+// Projekte archivieren (35_projekt_archiv.sql): weg aus jeder Auswahl, die Deals ins Archiv, nichts wird gelöscht.
+// Zurückholen holt genau die Deals zurück, die mit dem Projekt ins Archiv kamen.
+function ProjekteSettings() {
+  const { alleProjekte, cards, idx, actions } = useApp();
+  const eigene = alleProjekte.filter((p) => idx.ownsProject(p.id));
+  const [busy, setBusy] = useState(null);
+  if (!eigene.length) return null;
+  async function umschalten(p) {
+    const offen = cards.filter((c) => c.project_id === p.id && !c.archived).length;
+    if (!p.archiviert && !confirm(`„${p.name}“ archivieren? Das Projekt verschwindet aus der Auswahl, ${offen === 1 ? 'sein offener Deal kommt' : `seine ${offen} offenen Deals kommen`} ins Archiv. Gelöscht wird nichts.`)) return;
+    setBusy(p.id);
+    try {
+      const n = await db.rpc('projekt_archivieren', { pid: p.id, an: !p.archiviert });
+      await actions.load();
+      actions.notify(p.archiviert ? `„${p.name}“ ist zurück, ${n === 1 ? '1 Deal' : `${n} Deals`} wieder auf dem Board.`
+        : `„${p.name}“ archiviert, ${n === 1 ? '1 Deal' : `${n} Deals`} im Archiv.`);
+    } catch (e) { actions.fail(e); } finally { setBusy(null); }
+  }
+  return html`<div class="field"><span>Projekte</span>
+    ${eigene.map((p) => html`<div class="projekt-zeile" key=${p.id} style=${`--pc:${p.color}`}>
+      <span class="pchip"><span class="dot"></span>${p.name}${p.archiviert ? html` <span class="muted">· archiviert</span>` : ''}</span>
+      <button type="button" class="btn ghost xs" disabled=${busy === p.id} onClick=${() => umschalten(p)}>
+        ${busy === p.id ? '…' : p.archiviert ? 'Zurückholen' : 'Archivieren'}</button>
+    </div>`)}
+    <p class="muted small">Ein archiviertes Projekt steht in keiner Auswahl mehr. Seine Deals bleiben über die Suche oben, bei Kontakt und Firma und in Sales auffindbar.</p>
+  </div>`;
+}
+
 function SettingsSheet({ onLogout }) {
   const { session, actions, claude, isGuest } = useApp();
   const [theme, setTheme] = useState(ls.get('crm-theme') || '');
@@ -1348,7 +1393,9 @@ function SettingsSheet({ onLogout }) {
       </div>
       <${PushSettings} />
       <${GoogleAccounts} />
+      ${!isGuest && html`<${KalenderSettings} />`}
       ${!isGuest && html`<${TerminLinkSettings} />`}
+      ${!isGuest && html`<${ProjekteSettings} />`}
       <div class="field"><span>Zwei-Faktor</span>
         ${newFactor ? html`
           <p class="muted small">Neuen Faktor einrichten. Bis du den ersten Code bestätigst, gilt der bisherige weiter.</p>
@@ -1838,14 +1885,14 @@ const myOpen = (cards, me) => cards.filter((c) => !c.archived && (assigneesOf(c)
 // an „Übersicht“ und am App-Symbol trotzdem alles Fällige, auch To-dos.
 const isWorkList = (kind) => kind === 'todo' || kind === 'doing';
 // Seit 08.11.2026 mit Aktivitäten: Jeder Deal steht einmal da, sein nächster Schritt hängt an ihm (Sebastians Regel).
-// Datum eines Deals für die Wiedervorlagen ist seine früheste offene Aktivität, außerhalb von To-do und Ongoing
-// auch ein altes Datum am Deal. Aktivitäten ohne Deal (am Kontakt, an der Firma) stehen als eigene Zeile.
+// Datum eines Deals ist seine früheste offene Aktivität. Ein eigenes Fälligkeitsdatum am Deal gibt es seit
+// 13.11.2026 nicht mehr (34_faelligkeit_als_aktivitaet.sql). Aktivitäten ohne Deal stehen als eigene Zeile.
 // Einträge sind { card, date } oder { akt, date }.
 function followUpOf(open, idx) {
   const today = todayStr();
   const soon = addDays(today, 7);
   const kind = (c) => stageKind(idx.stage.get(c.stage_id));
-  const dateOf = (c) => [idx.nextAkt(c.id)?.faellig, isWorkList(kind(c)) ? null : c.due_date].filter(Boolean).sort()[0] || null;
+  const dateOf = (c) => idx.nextAkt(c.id)?.faellig || null;
   const byDate = (a, b) => a.date.localeCompare(b.date) || (a.card ? byUpdatedDesc(a.card, b.card || a.card) : 0);
   const active = open.filter((c) => kind(c) !== 'done');
   const answered = active.filter((c) => idx.answerOf.has(c.id))
@@ -1858,9 +1905,8 @@ function followUpOf(open, idx) {
   const next = entries.filter((e) => e.date && e.date > today && e.date <= soon).sort(byDate);
   const waiting = follow.filter((c) => kind(c) === 'waiting' && !(dateOf(c) && dateOf(c) <= soon))
     .sort((a, b) => (dateOf(a) || '9').localeCompare(dateOf(b) || '9') || ts(a.updated_at) - ts(b.updated_at));
-  // Für die Zahl an „Übersicht“: alles Fällige, je Deal einmal, auch To-dos mit Frist oder fälliger Aktivität
-  const workDue = rest.filter((c) => isWorkList(kind(c))
-    && ((c.due_date && c.due_date <= today) || (idx.nextAkt(c.id)?.faellig || '9') <= today));
+  // Für die Zahl an „Übersicht“: alles Fällige, je Deal einmal, auch To-dos mit fälliger Aktivität
+  const workDue = rest.filter((c) => isWorkList(kind(c)) && (dateOf(c) || '9') <= today);
   return { answered, due, next, waiting, dueAll: [...due, ...workDue], dateOf };
 }
 
@@ -1940,8 +1986,8 @@ function Overview() {
 
   // Eine Gruppe je Projekt, in der Reihenfolge der Projekte (Spalte sort). Darin nach Dringlichkeit in der
   // Reihenfolge von prioRank (hoch, mittel, ohne, niedrig), bei gleicher Dringlichkeit das zuerst Fällige oben.
-  // Datum zum Sortieren: Frist oder nächste Aktivität, was früher kommt
-  const whenOf = (c) => [c.due_date, idx.nextAkt(c.id)?.faellig].filter(Boolean).sort()[0] || '9';
+  // Datum zum Sortieren: die nächste Aktivität
+  const whenOf = (c) => idx.nextAkt(c.id)?.faellig || '9';
   const sections = projects.map((p) => [p, todo.filter((c) => c.project_id === p.id)
     .sort((a, b) => prioRank(a) - prioRank(b) || whenOf(a).localeCompare(whenOf(b)) || byUpdatedDesc(a, b))])
     .filter(([, list]) => list.length > 0);
@@ -2386,7 +2432,8 @@ function Board({ projectId, archiv = false }) {
   const [removing, setRemoving] = useState(null);
   const [colBusy, setColBusy] = useState(false);
   const renameCancelled = useRef(false);
-  const project = idx.project.get(Number(projectId)) || idx.project.get(Number(ls.get('crm-project'))) || projects[0];
+  const aktiv = (id) => projects.find((p) => p.id === Number(id));
+  const project = aktiv(projectId) || aktiv(ls.get('crm-project')) || projects[0];
   const cols = useMemo(() => (project ? stages.filter((s) => s.project_id === project.id).sort(bySort) : []), [stages, project]);
   const tabsRef = useRef(null);
   useEffect(() => {
@@ -2677,7 +2724,6 @@ function ProjectShare({ project }) {
 
 function CardBadges({ card, noAnswer }) {
   const { idx } = useApp();
-  const due = dueInfo(card.due_date);
   const p = PRIO[card.priority];
   const a = !noAnswer && idx.answerOf.get(card.id);
   // Nächste Aktivität des Deals, wie in Pipedrive: Symbol der Art und wann, rot wenn überfällig
@@ -2686,7 +2732,7 @@ function CardBadges({ card, noAnswer }) {
   const mehr = akt ? (idx.aktOfCard.get(card.id) || []).length - 1 : 0;
   // Wert aus Sales, bei gewonnen und verloren mit Haken oder durchgestrichen
   const vk = idx.verkaufOf.get(card.id);
-  if (!due && !p && !a && !akt && !vk) return null;
+  if (!p && !a && !akt && !vk) return null;
   return html`<span class="badges">
     ${vk && html`<span class=${'vk-badge ' + vk.status} title=${`Sales: ${VK[vk.status]}${vk.wert != null ? `, ${eur(vk.wert)}` : ''}`}>
       ${vk.status === 'gewonnen' && html`<${Icon} n="check" />`}${vk.wert != null ? eurKurz(vk.wert) : VK[vk.status]}</span>`}
@@ -2694,7 +2740,6 @@ function CardBadges({ card, noAnswer }) {
     ${akt && html`<span class=${'akt-badge ' + ai.cls} title=${`${AKT[akt.art]?.label}${akt.titel ? `: ${akt.titel}` : ''}${mehr > 0 ? ` (dazu ${mehr} weitere)` : ''}`}>
       <${Icon} n=${AKT[akt.art]?.icon || 'bell'} />${ai.label}${aktZeit(akt) ? ` ${aktZeit(akt)}` : ''}</span>`}
     ${p && html`<span class=${'prio prio-' + card.priority}>${p.label}</span>`}
-    ${due && html`<span class=${'due ' + due.cls}>${due.label}</span>`}
   </span>`;
 }
 
@@ -2858,11 +2903,12 @@ function CardSheet({ id, query }) {
   const firstStage = (pid) => stages.filter((s) => s.project_id === pid).sort(bySort)[0]?.id ?? null;
   const [form, setForm] = useState(() => {
     if (card) {
-      const { title, project_id, stage_id, person_id, org_id, priority, due_date } = card;
-      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null, due_date: due_date ?? null,
+      const { title, project_id, stage_id, person_id, org_id, priority } = card;
+      return { title, project_id, stage_id, person_id, org_id, priority: priority ?? null,
         assignees: assigneesOf(card), labels: card.labels || [] };
     }
-    const pid = Number(query.get('projekt')) || Number(ls.get('crm-project')) || projects[0]?.id;
+    const aktiv = (id) => projects.find((p) => p.id === Number(id))?.id;
+    const pid = aktiv(query.get('projekt')) || aktiv(ls.get('crm-project')) || projects[0]?.id;
     const person = idx.person.get(Number(query.get('kontakt')));
     return {
       // Aus einer Mail angelegt: Betreff als Vorschlag für den Titel
@@ -2872,7 +2918,6 @@ function CardSheet({ id, query }) {
       person_id: person?.id ?? null,
       org_id: Number(query.get('firma')) || person?.org_id || null,
       priority: null,
-      due_date: null,
       assignees: [],
       labels: [],
     };
@@ -2924,7 +2969,7 @@ function CardSheet({ id, query }) {
   }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'due_date', 'assignees', 'labels'];
+  const fields = ['title', 'project_id', 'stage_id', 'person_id', 'org_id', 'priority', 'assignees', 'labels'];
   const fromMeeting = card?.meeting_id ? idx.meeting.get(card.meeting_id) : null;
   const cardDirty = !card || fields.some((k) => !sameValue(form[k], k === 'assignees' ? assigneesOf(card) : k === 'labels' ? card.labels || [] : card[k]));
   const wertNeu = parseWert(wertIn);
@@ -2956,8 +3001,7 @@ function CardSheet({ id, query }) {
     set('stage_id', sid);
     // Spalte wechseln speichert sofort, solange das Projekt gleich bleibt.
     if (card && form.project_id === card.project_id) {
-      actions.patch('cards', card.id, { stage_id: sid })
-        .then((saved) => { if (saved?.due_date) setForm((f) => (f.due_date ? f : { ...f, due_date: saved.due_date })); });
+      actions.patch('cards', card.id, { stage_id: sid });
     }
   }
   // Sales-Status: sofort gespeichert, ein angefangener Wert gleich mit. Gewonnen oder verloren schiebt den Deal
@@ -3007,8 +3051,6 @@ function CardSheet({ id, query }) {
     if (!card) return;
     const stageId = toWait ? waitStage.id : form.stage_id;
     const due = await actions.wiederVorlegen(card, days);
-    // Ein altes Datum als Wiedervorlage hat wiederVorlegen am Deal geleert, das Formular zieht nach
-    if (card.due_date && !isWorkList(stageKind(idx.stage.get(card.stage_id)))) setForm((f) => ({ ...f, due_date: null }));
     if (stageId !== card.stage_id && form.project_id === card.project_id) {
       setForm((f) => ({ ...f, stage_id: stageId }));
       await actions.patch('cards', card.id, { stage_id: stageId });
@@ -3123,8 +3165,10 @@ function CardSheet({ id, query }) {
       </div>`}
       <label class="field"><span>Projekt</span>
         <select value=${form.project_id} onChange=${(e) => changeProject(Number(e.target.value))}>
-          ${projects.filter((p) => (isGuest ? guestProjects.has(p.id) : ownProject || p.id === card.project_id))
-            .map((p) => html`<option key=${p.id} value=${p.id}>${p.name}</option>`)}
+          ${[...projects, ...(card && !projects.some((p) => p.id === card.project_id) && idx.project.get(card.project_id)
+    ? [idx.project.get(card.project_id)] : [])]
+            .filter((p) => (isGuest ? guestProjects.has(p.id) : ownProject || p.id === card.project_id))
+            .map((p) => html`<option key=${p.id} value=${p.id}>${p.name}${p.archiviert ? ' (archiviert)' : ''}</option>`)}
         </select></label>`}
       <div class="field"><span>Spalte</span>
         <div class="seg wrap">${projStages.map((s) => html`<button type="button" key=${s.id}
@@ -3152,14 +3196,10 @@ function CardSheet({ id, query }) {
         ${vk.status !== 'offen' && html`<input type="date" class="vk-datum" value=${vk.abgeschlossen_am || ''} aria-label="Abschlussdatum"
           onChange=${(e) => actions.saveVerkauf(card.id, { abgeschlossen_am: e.target.value || null }).catch(() => {})} />`}
         <button type="button" class="btn link sm" onClick=${outOfSales}>Aus Sales nehmen</button></p>`}`}
-      <div class="field-row">
-        <div class="field"><span>Dringlichkeit</span>
-          <div class="seg">${Object.entries(PRIO).map(([k, p]) => html`<button type="button" key=${k}
-            class=${'seg-btn prio-btn prio-' + k + (form.priority === k ? ' on' : '')}
-            onClick=${() => set('priority', form.priority === k ? null : k)}>${p.label}</button>`)}</div>
-        </div>
-        <label class="field"><span>Fällig am</span>
-          <input type="date" value=${form.due_date || ''} onInput=${(e) => set('due_date', e.target.value || null)} /></label>
+      <div class="field"><span>Dringlichkeit</span>
+        <div class="seg">${Object.entries(PRIO).map(([k, p]) => html`<button type="button" key=${k}
+          class=${'seg-btn prio-btn prio-' + k + (form.priority === k ? ' on' : '')}
+          onClick=${() => set('priority', form.priority === k ? null : k)}>${p.label}</button>`)}</div>
       </div>
       ${card && html`<div class="field"><span>${toWait ? 'Warte auf Antwort, wieder vorlegen' : 'Wieder vorlegen'}</span>
         <div class="seg wrap">${FOLLOW_STEPS.map(([d, l]) => html`<button type="button" key=${d} class="seg-btn" onClick=${() => followUp(d)}>in ${l}</button>`)}</div>
@@ -3361,7 +3401,7 @@ function GuestHome() {
   };
   return html`<div class="page">
     <${PageHead} title="Mit dir geteilt" count=${list.length} />
-    ${owners && html`<p class="muted small">Von ${owners}. Du kannst Notizen schreiben und Spalte, Dringlichkeit, Fälligkeit und Zuständigkeit ändern. In ganz geteilten Projekten kannst du auch Deals anlegen.</p>`}
+    ${owners && html`<p class="muted small">Von ${owners}. Du kannst Notizen schreiben, Aktivitäten planen und Spalte, Dringlichkeit und Zuständigkeit ändern. In ganz geteilten Projekten kannst du auch Deals anlegen.</p>`}
     ${mine.length > 0 && html`<section class="panel"><h3>Für dich <span class="count">${mine.length}</span></h3>${mine.map(row)}</section>`}
     ${byProject.size === 0
     ? html`<div class="empty-state"><h2>Noch nichts geteilt</h2><p class="muted">Sobald ein Deal mit dir geteilt wird, steht er hier.</p></div>`
@@ -3824,23 +3864,24 @@ function gcalTemplateUrl({ title, start, end, guests, details, location, meet, a
 }
 
 function NewEventSheet({ query }) {
-  const { idx, persons, events, actions } = useApp();
+  const { idx, persons, events, actions, einstellungen } = useApp();
   const konten = useGoogleKonten();
   const [busy, setBusy] = useState(false);
   const close = () => back('#/kalender');
   // Konten: die eigenen Kalender, die das CRM kennt (Kalender-ID = Mailadresse des Kontos). Kalender von Kollegen
-  // derselben Domain kommen nicht in die Auswahl.
+  // derselben Domain und ausgeblendete Kalender kommen nicht in die Auswahl.
   const accounts = useMemo(() => {
     const m = new Map();
     const eigene = new Set(konten.map((k) => k.address));
     const domains = new Set(konten.map((k) => k.address.split('@')[1]));
+    const aus = new Set(einstellungen.kalender_aus || []);
     events.forEach((e) => {
-      if (!e.calendar_id.includes('@') || e.calendar_id.endsWith('calendar.google.com')) return;
+      if (!e.calendar_id.includes('@') || e.calendar_id.endsWith('calendar.google.com') || aus.has(e.calendar_id)) return;
       if (eigene.has(e.calendar_id) || !domains.has(e.calendar_id.split('@')[1])) m.set(e.calendar_id, e.calendar_name);
     });
     konten.forEach((k) => { if (!m.has(k.address)) m.set(k.address, k.address.split('@')[1]); });
     return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], 'de'));
-  }, [events, konten]);
+  }, [events, konten, einstellungen.kalender_aus]);
   const startDefault = (() => {
     const d = nextHalfHour();
     const day = query.get('tag') || localDay(d);
@@ -4316,7 +4357,7 @@ function MeetingSheet({ meeting: m }) {
     return cols.find((s) => stageKind(s) === wanted) || cols.find((s) => stageKind(s) === 'todo') || cols[0];
   }
   async function toBoard(it) {
-    const pid = m.project_id || projects.find((p) => norm(p.name) === 'allgemein')?.id || projects[0]?.id;
+    const pid = projects.find((p) => p.id === m.project_id)?.id || projects.find((p) => norm(p.name) === 'allgemein')?.id || projects[0]?.id;
     const ownerFirst = norm(it.owner).split(' ')[0];
     const person = it.mine
       ? (linked.length === 1 ? linked[0].p : null)
@@ -4351,7 +4392,9 @@ function MeetingSheet({ meeting: m }) {
       <label class="field"><span>Projekt</span>
         <select value=${m.project_id ?? ''} onChange=${(e) => actions.patch('meetings', m.id, { project_id: e.target.value ? Number(e.target.value) : null })}>
           <option value="">Kein Projekt</option>
-          ${projects.map((p) => html`<option key=${p.id} value=${p.id}>${p.name}</option>`)}
+          ${[...projects, ...(m.project_id && !projects.some((p) => p.id === m.project_id) && idx.project.get(m.project_id)
+    ? [idx.project.get(m.project_id)] : [])]
+            .map((p) => html`<option key=${p.id} value=${p.id}>${p.name}${p.archiviert ? ' (archiviert)' : ''}</option>`)}
         </select></label>
       <div class="field"><span>Teilnehmer</span>
         <div class="participants">

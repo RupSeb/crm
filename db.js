@@ -256,7 +256,7 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v9';
+const KEY = 'crm-demo-v10';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
   'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten', 'verkauf'];
@@ -366,7 +366,7 @@ function demoAktLog(a, before) {
 function demoFeedback(card, before) {
   const s = state();
   const st = s.stages.find((x) => x.id === card.stage_id);
-  if ((before && before.stage_id === card.stage_id) || card.archived || card.due_date || !st || !lc(st.name).startsWith('feedback')) return;
+  if ((before && before.stage_id === card.stage_id) || card.archived || !st || !lc(st.name).startsWith('feedback')) return;
   if (s.aktivitaeten.some((a) => a.card_id === card.id && !a.erledigt_at)) return;
   const d = new Date(Date.now() + 7 * 864e5);
   s.seq += 1;
@@ -424,6 +424,16 @@ const demo = {
     if (fn === 'my_role') return DEMO_GUEST ? 'gast' : 'owner';
     if (fn === 'crm_users') return DEMO_USERS;
     if (fn === 'log_file') { logDemo(args.cid, 'datei', args.fname); persist(); }
+    // Wie supabase/35_projekt_archiv.sql
+    if (fn === 'projekt_archivieren') {
+      const s = state();
+      const p = s.projects.find((x) => x.id === args.pid);
+      if (p) p.archiviert = !!args.an;
+      const betroffen = s.cards.filter((c) => c.project_id === args.pid && (args.an ? !c.archived : c.archiv_mit_projekt));
+      betroffen.forEach((c) => { c.archived = !!args.an; c.archiv_mit_projekt = !!args.an; logDemo(c.id, 'archiv', args.an ? 'ja' : 'nein'); });
+      persist();
+      return betroffen.length;
+    }
     if (fn === 'meine_google_konten') return DEMO_GUEST ? [] : demoKonten.map(copy);
     if (fn === 'google_konto_trennen') demoKonten = demoKonten.filter((k) => k.id !== args.kid);
     if (DEMO_GUEST && ['antworten_offen', 'mails_ohne_antwort'].includes(fn)) return [];

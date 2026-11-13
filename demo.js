@@ -63,17 +63,17 @@ export function demoSeed() {
     s.cards.push(c);
     return c;
   };
-  const angebot = card('Angebot Kundenportal schreiben', 'Vertrieb', 'To-Dos', anna, 0, { priority: 'hoch', due_date: inDays(0) });
-  card('Präsentation aktualisiert zuschicken', 'Kooperationen', 'To-Dos', david, 1, { priority: 'mittel', due_date: inDays(2) });
+  const angebot = card('Angebot Kundenportal schreiben', 'Vertrieb', 'To-Dos', anna, 0, { priority: 'hoch' });
+  const praesentation = card('Präsentation aktualisiert zuschicken', 'Kooperationen', 'To-Dos', david, 1, { priority: 'mittel' });
   const rahmen = card('Rahmenvertrag – Rückmeldung?', 'Kooperationen', 'Feedback von Anderen', david, 2);
   const rollout = card('Rollout Kundenportal', 'Vertrieb', 'Ongoing', anna, 4);
   card('Kooperation Region Süd', 'Kooperationen', 'Zukünftig', null, 20);
   const terminMuster = card('Termin Musterfirma vorbereiten', 'Vertrieb', 'Erledigt', anna, 6);
   const vertrag = card('Mietvertrag – Feedback?', 'Objekte', 'Feedback von Anderen', clara, 3);
-  card('Rechnung Software prüfen', 'Allgemein', 'To-Dos', null, 2, { due_date: inDays(-2) });
+  const rechnung = card('Rechnung Software prüfen', 'Allgemein', 'To-Dos', null, 2);
   card('Rückfragen Anwalt klären', 'Objekte', 'Erledigt', clara, 7);
   card('Exposé Wohnung Musterstadt schicken', 'Objekte', 'To-Dos', eva, 1, { priority: 'hoch' });
-  card('Finanzierung klären', 'Objekte', 'Ongoing', frank, 9, { due_date: inDays(10) });
+  const finanzierung = card('Finanzierung klären', 'Objekte', 'Ongoing', frank, 9);
   card('Neue Zielgruppe testen', 'Vertrieb', 'To-Dos', ben, 0);
   card('Rechnungen einfordern', 'Allgemein', 'To-Dos', null, 5, { priority: 'niedrig' });
   const wartung = card('Wartungsvertrag Beispiel Handel', 'Vertrieb', 'Erledigt', ben, 12);
@@ -100,8 +100,6 @@ export function demoSeed() {
   s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(3), actor: 'demo@beispiel.de', kind: 'angelegt', detail: null });
   s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(2), actor: 'demo@beispiel.de', kind: 'zustaendig', detail: 'gast@beispiel.de' });
   s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(1), actor: 'gast@beispiel.de', kind: 'notiz', detail: null });
-  s.card_events.push({ id: id(), card_id: rahmen.id, at: ago(0, 5), actor: 'gast@beispiel.de', kind: 'faellig', detail: inDays(4) });
-  rahmen.due_date = inDays(4);
   note('Entwurf liegt bei Partner Süd, Rückmeldung bis Freitag zugesagt.', { card: rahmen }, 2);
   note('Preisrahmen intern: bis 5 % Nachlass vertretbar.', { card: rahmen }, 2, { private: true });
   note('Habe mit David telefoniert, Paragraf 4 wird noch angepasst.', { card: rahmen }, 1, { author: 'gast@beispiel.de' });
@@ -163,13 +161,16 @@ export function demoSeed() {
     id: id(), owner: 'demo@beispiel.de', card_id: null, person_id: null, org_id: null, art: 'wiedervorlage', titel: null,
     uhrzeit: null, zustaendig: null, erledigt_at: null, erledigt_von: null, created_at: ago(2), updated_at: ago(2), ...extra,
   });
-  rahmen.due_date = null;
   s.aktivitaeten = [
     akt({ card_id: angebot.id, art: 'anruf', titel: 'Rückfragen zum Angebot', faellig: inDays(1), uhrzeit: '10:00' }),
     akt({ card_id: vertrag.id, art: 'wiedervorlage', faellig: inDays(2) }),
     akt({ card_id: vertrag.id, art: 'mail', titel: 'Entwurf geschickt', faellig: inDays(-6), erledigt_at: ago(6), erledigt_von: 'demo@beispiel.de' }),
     akt({ card_id: rahmen.id, art: 'wiedervorlage', faellig: inDays(4), owner: 'demo@beispiel.de' }),
     akt({ person_id: eva.id, art: 'anruf', titel: 'Besichtigungstermin abstimmen', faellig: inDays(0) }),
+    // Fristen sind seit 13.11.2026 Aktivitäten (34_faelligkeit_als_aktivitaet.sql)
+    akt({ card_id: praesentation.id, art: 'aufgabe', titel: 'Frist', faellig: inDays(2) }),
+    akt({ card_id: rechnung.id, art: 'aufgabe', titel: 'Frist', faellig: inDays(-2) }),
+    akt({ card_id: finanzierung.id, art: 'aufgabe', titel: 'Frist', faellig: inDays(10) }),
   ];
   // Sales (32_verkauf.sql): drei offene Deals, einer davon ohne nächsten Schritt, einer schon erledigt ohne Ergebnis,
   // dazu je ein gewonnener und ein verlorener. Der geteilte Rahmenvertrag hat einen Wert, den der Gast nicht sieht.
