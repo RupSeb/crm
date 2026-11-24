@@ -244,6 +244,13 @@ const remote = {
     const c = await client();
     return check(await c.from(table).insert(row).select().single());
   },
+  // Viele Zeilen auf einmal (z. B. Kontakte in eine Kampagne), in Paketen
+  async insertMany(table, rows) {
+    const c = await client();
+    const out = [];
+    for (let i = 0; i < rows.length; i += 200) out.push(...check(await c.from(table).insert(rows.slice(i, i + 200)).select()));
+    return out;
+  },
   async update(table, id, patch) {
     const c = await client();
     return check(await c.from(table).update(patch).eq('id', id).select().single());
@@ -284,7 +291,8 @@ const remote = {
 const KEY = 'crm-demo-v12';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
-  'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten', 'verkauf'];
+  'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten', 'verkauf',
+  'kampagnen', 'kampagne_schritte', 'kampagne_kontakte', 'sperrliste'];
 // Zum Ausprobieren der Gast-Ansicht: ?demo&gast in der Adresse
 const DEMO_GUEST = new URLSearchParams(location.search).has('gast');
 const DEMO_USERS = [
@@ -426,6 +434,103 @@ function demoVerkauf(r, before) {
   }
 }
 
+// Kampagnen: dieselben Regeln wie die Trigger in supabase/40_kampagnen.sql
+const KK_FREI = new Set(['gmail.com', 'googlemail.com', 'gmx.de', 'gmx.net', 'web.de', 't-online.de', 'outlook.com', 'hotmail.com',
+  'live.com', 'yahoo.com', 'icloud.com', 'eircom.net']);
+const domainVon = (a) => lc(a).split('@')[1] || '';
+const KK_OFFEN_DEMO = ['wartet', 'laeuft', 'abwesend'];
+const tagHeute = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+function werktagePlus(tag, n) {
+  const d = new Date(tag + 'T12:00:00');
+  for (let i = 0; i < n;) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) i += 1; }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const demoGesperrt = (mail) => state().sperrliste.some((x) => x.eintrag === lc(mail) || x.eintrag === '@' + domainVon(mail));
+function demoSperrlisteAnwenden(eintrag) {
+  state().kampagne_kontakte.forEach((k) => {
+    if (KK_OFFEN_DEMO.includes(k.status) && (k.email === eintrag || '@' + domainVon(k.email) === eintrag)) { k.status = 'gesperrt'; k.naechster_am = null; }
+  });
+}
+function demoZeileNeu(table, r) {
+  const s = state();
+  if (table === 'kampagnen') Object.assign(r, { status: r.status || 'entwurf', tageslimit: r.tageslimit || 20, signatur: r.signatur ?? '' });
+  if (table === 'sperrliste') {
+    r.eintrag = lc(r.eintrag).trim();
+    r.grund = r.grund || 'manuell';
+    if (s.sperrliste.some((x) => x !== r && x.eintrag === r.eintrag)) throw new Error('Steht schon auf der Sperrliste.');
+  }
+  if (table === 'kampagne_kontakte') {
+    r.email = lc(r.email).trim();
+    if (s.kampagne_kontakte.some((x) => x !== r && x.kampagne_id === r.kampagne_id && x.email === r.email)) throw new Error('Diese Adresse ist schon in der Kampagne.');
+    if (!r.org_id && r.person_id) r.org_id = s.persons.find((p) => p.id === r.person_id)?.org_id ?? null;
+    Object.assign(r, { satz: r.satz || '', schritt: r.schritt || 0, status: demoGesperrt(r.email) ? 'gesperrt' : r.status || 'wartet',
+      naechster_am: null, erste_am: null, gesendet_am: null, erste_gmail_id: null, letzte_gmail_id: null, thread_id: null,
+      antwort_email_id: null, antwort_am: null });
+  }
+}
+function demoKampagneGesendet({ p_kontakt, p_gmail_id, p_thread_id }) {
+  const s = state();
+  const k = s.kampagne_kontakte.find((x) => x.id === p_kontakt);
+  if (!k) throw new Error('Diesen Kontakt gibt es in keiner deiner Kampagnen.');
+  const neu = k.schritt + 1;
+  const naechster = s.kampagne_schritte.filter((x) => x.kampagne_id === k.kampagne_id && x.nr > neu).sort((a, b) => a.nr - b.nr)[0];
+  const offen = ['wartet', 'laeuft'].includes(k.status);
+  Object.assign(k, {
+    schritt: neu, erste_am: k.erste_am || now(), gesendet_am: now(), erste_gmail_id: k.erste_gmail_id || p_gmail_id,
+    letzte_gmail_id: p_gmail_id || k.letzte_gmail_id, thread_id: k.thread_id || p_thread_id,
+    status: offen ? (naechster ? 'laeuft' : 'fertig') : k.status,
+    naechster_am: !naechster || !offen ? null : werktagePlus(tagHeute(), Math.max(1, naechster.abstand_tage)), updated_at: now(),
+  });
+  persist();
+  return copy(k);
+}
+function demoKampagneAntwort(m) {
+  const s = state();
+  const von = lc(m.from_email);
+  const dom = domainVon(von);
+  const abwesend = /(out of (the )?office|automatic reply|auto[- ]?reply|autoreply|abwesenheit|abwesend|automatische antwort|im urlaub)/i.test(m.subject || '');
+  const getroffen = s.kampagne_kontakte.filter((k) => k.email === von && ['laeuft', 'abwesend', 'fertig'].includes(k.status) && k.erste_am);
+  const setze = (k, status) => Object.assign(k, { status, antwort_email_id: m.id, antwort_am: m.sent_at, naechster_am: status === 'abwesend' ? k.naechster_am : null });
+  getroffen.forEach((k) => {
+    if (abwesend) { if (k.status === 'laeuft') setze(k, 'abwesend'); return; }
+    setze(k, 'beantwortet');
+    s.kampagne_kontakte.filter((o) => o.kampagne_id === k.kampagne_id && o !== k && KK_OFFEN_DEMO.includes(o.status)
+      && ((k.org_id && o.org_id === k.org_id) || (!KK_FREI.has(dom) && domainVon(o.email) === dom))).forEach((o) => setze(o, 'firma'));
+  });
+  if (!getroffen.length && !abwesend && !KK_FREI.has(dom)) {
+    s.kampagne_kontakte.filter((o) => KK_OFFEN_DEMO.includes(o.status) && domainVon(o.email) === dom
+      && s.kampagne_kontakte.some((x) => x.kampagne_id === o.kampagne_id && domainVon(x.email) === dom && x.erste_am)).forEach((o) => setze(o, 'firma'));
+  }
+}
+// Zum Ausprobieren in der Demo: Antwort oder Rückläufer von außen nachstellen (in der Konsole des Browsers)
+if (DEMO) {
+  window.crmDemoAntwort = (adresse, betreff = 'Re: Ihre Mail', text = 'Gerne, lassen Sie uns sprechen.') => {
+    const s = state();
+    s.seq += 1;
+    const m = { id: s.seq, message_id: `<demo-in-${s.seq}@beispiel.de>`, thread_id: null, mailbox: 'demo@beispiel.de', gmail_id: `demo-in-${s.seq}`,
+      direction: 'in', from_email: lc(adresse), from_name: '', to_emails: ['demo@beispiel.de'], cc_emails: [], subject: betreff, sent_at: now(),
+      body: text, attachments: [], in_inbox: true, created_at: now() };
+    s.emails.push(m);
+    s.persons.filter((p) => (p.emails || []).some((e) => lc(e) === lc(adresse))).forEach((p) => {
+      s.seq += 1;
+      s.email_persons.push({ id: s.seq, email_id: m.id, person_id: p.id });
+    });
+    demoKampagneAntwort(m);
+    persist();
+    return m.id;
+  };
+  window.crmDemoRuecklaeufer = (adresse) => {
+    const s = state();
+    const a = lc(adresse);
+    s.kampagne_kontakte.forEach((k) => { if (k.email === a && [...KK_OFFEN_DEMO, 'fertig'].includes(k.status)) { k.status = 'ruecklaeufer'; k.naechster_am = null; } });
+    if (!s.sperrliste.some((x) => x.eintrag === a)) { s.seq += 1; s.sperrliste.push({ id: s.seq, eintrag: a, grund: 'ruecklaeufer', notiz: 'Delivery Status Notification', created_at: now() }); }
+    persist();
+  };
+}
+
 let demoKonten = [
   { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true, darf_termine: true,
     kalender_an: [], kalender: [
@@ -491,6 +596,7 @@ const demo = {
       persist();
       return null;
     }
+    if (fn === 'kampagne_gesendet') return demoKampagneGesendet(args);
     if (DEMO_GUEST && ['antworten_offen', 'mails_ohne_antwort'].includes(fn)) return [];
     if (fn === 'antworten_offen') return demoAntworten();
     if (fn === 'mails_ohne_antwort') return demoOhneAntwort(args.p_tage ?? 3);
@@ -523,13 +629,14 @@ const demo = {
     const liste = (x) => (String(x || '').match(/[^\s,;<>"]+@[^\s,;<>"]+/g) || []).map((a) => a.toLowerCase());
     const an = liste(mail.an);
     s.seq += 1;
+    const vorher = mail.antwort_auf ? s.emails.find((x) => x.gmail_id === mail.antwort_auf) : null;
     const m = {
-      id: s.seq, message_id: `<demo-${s.seq}@beispiel.de>`, thread_id: null, mailbox: mail.von, gmail_id: null, direction: 'out',
+      id: s.seq, message_id: `<demo-${s.seq}@beispiel.de>`, thread_id: vorher?.thread_id || `demo-t${s.seq}`, mailbox: mail.von,
+      gmail_id: `demo-gesendet-${s.seq}`, direction: 'out',
       from_email: mail.von, from_name: 'Alex Demo', to_emails: an, cc_emails: liste(mail.cc), subject: mail.betreff, sent_at: now(),
       body: mail.text, attachments: (mail.anhaenge || []).map((a) => a.name), in_inbox: false, created_at: now(),
     };
     if (mail.verfolgen) {
-      m.gmail_id = `demo-gesendet-${s.seq}`;
       s.mail_spuren = [...(s.mail_spuren || []), { id: s.seq, mailbox: mail.von, gmail_id: m.gmail_id, thread_id: null, betreff: mail.betreff,
         empfaenger: an, gesendet_at: now(), geoeffnet: 0, zuerst_geoeffnet: null, zuletzt_geoeffnet: null, klicks: 0, klick_liste: [] }];
     }
@@ -539,7 +646,7 @@ const demo = {
       s.email_persons.push({ id: s.seq, email_id: m.id, person_id: p.id });
     });
     persist();
-    return { ok: true };
+    return { ok: true, gmail_id: m.gmail_id, thread_id: m.thread_id };
   },
   async termin(t) {
     const s = state();
@@ -620,7 +727,9 @@ const demo = {
     const s = state();
     s.seq += 1;
     const r = { id: s.seq, created_at: now(), updated_at: now(), ...(table === 'notes' ? { private: false, author: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de' } : {}), ...row };
+    demoZeileNeu(table, r);
     s[table].push(r);
+    if (table === 'sperrliste') demoSperrlisteAnwenden(r.eintrag);
     if (table === 'notes') {
       touch('cards', r.card_id);
       touch('persons', r.person_id);
@@ -633,6 +742,11 @@ const demo = {
     if (table === 'aktivitaeten') demoAktLog(r, null);
     persist();
     return copy(r);
+  },
+  async insertMany(table, rows) {
+    const out = [];
+    for (const row of rows) out.push(await demo.insert(table, row));
+    return out;
   },
   async update(table, id, patch) {
     const r = state()[table].find((x) => x.id === id);
@@ -680,6 +794,10 @@ const demo = {
     }
     if (table === 'organizations') { unlink('persons', 'org_id'); unlink('cards', 'org_id'); unlink('notes', 'org_id'); }
     if (table === 'meetings') s.meeting_persons = s.meeting_persons.filter((l) => l.meeting_id !== id);
+    if (table === 'kampagnen') {
+      s.kampagne_schritte = s.kampagne_schritte.filter((x) => x.kampagne_id !== id);
+      s.kampagne_kontakte = s.kampagne_kontakte.filter((x) => x.kampagne_id !== id);
+    }
     if (table === 'projects') {
       unlink('meetings', 'project_id');
       const cardIds = new Set(s.cards.filter((c) => c.project_id === id).map((c) => c.id));

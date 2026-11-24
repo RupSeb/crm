@@ -1475,3 +1475,70 @@ body { font-variant-numeric: tabular-nums; }
   /* Neue Spalte am Handy über „Spalte bearbeiten“, sonst stünde das Plus allein in einer Zeile */
   .stage-tabs .stab.add { display: none; }
 }
+
+/* Kampagnen (v78, Kaltakquise Stufe 1) */
+.seite-text { max-width: 760px; margin: -4px 0 14px; }
+.kampagne-neu {
+  flex: 1 1 260px; max-width: 420px; height: 40px; padding: 0 12px; border-radius: 10px;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font: 15px var(--font);
+}
+.kampagne-dran-hinweis { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; color: var(--gold-l); font-weight: 500; }
+.kampagne-dran-hinweis .ico { width: 16px; height: 16px; }
+.kampagnen-page .list { margin-bottom: 16px; }
+.badge.kampagne-entwurf, .badge.kampagne-beendet, .badge.kk-wartet, .badge.kk-grau { background: var(--hover); color: var(--muted); }
+.badge.kampagne-aktiv, .badge.kk-antwort { background: var(--ok); color: #fff; }
+.badge.kampagne-pausiert, .badge.kk-abwesend { background: color-mix(in srgb, var(--gold) 28%, transparent); color: var(--text); }
+.badge.kk-laeuft { background: var(--accent-soft); color: var(--gold-l); }
+.badge.kk-fehler { background: color-mix(in srgb, var(--danger) 26%, transparent); color: var(--text); }
+.kampagne-kopf { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.kampagne-kopf h1 { margin: 0; font: 600 28px/1.15 var(--font-serif); letter-spacing: -0.01em; }
+.kampagne-knoepfe { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.kampagne-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 14px; align-items: start; margin-top: 4px; }
+.kampagne-grid > div { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.kampagne-heute .btn { margin-top: 6px; }
+.tile h2 .kopf-knopf { margin-left: auto; }
+.warnung { margin: 4px 0; color: var(--gold-l); font-size: 13px; }
+.kk-filter { margin-bottom: 10px; }
+.kk-liste { display: flex; flex-direction: column; margin-top: 8px; }
+.kk-zeile { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 10px 2px; border-top: 1px solid var(--border); }
+.kk-zeile:first-child { border-top: 0; }
+.kk-haupt { min-width: 0; }
+.kk-haupt a { color: var(--text); text-decoration: none; }
+.kk-haupt a:hover { color: var(--gold-l); }
+.kk-meta { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.kk-aktionen { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; align-items: center; }
+.kk-satz {
+  grid-column: 1 / -1; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text); font: 13.5px var(--font);
+}
+.kk-satz:focus { outline: none; border-color: var(--gold); }
+.kk-antwort { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-left: 2px solid var(--ok);
+  background: var(--hover); border-radius: 6px; font-size: 13.5px; }
+.kk-antwort-knoepfe { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.kk-auswahl { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.kk-kandidat { align-items: flex-start; padding: 6px 4px; border-radius: 8px; }
+.kk-kandidat:hover { background: var(--hover); }
+.kk-kandidat.aus { opacity: 0.55; cursor: default; }
+.kk-kandidat input { margin-top: 2px; }
+.kk-kandidat-text { display: flex; flex-direction: column; min-width: 0; }
+.sperr-zeile { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); }
+.sperr-eintrag { font-weight: 500; overflow-wrap: anywhere; }
+.sperr-zeile .chip-x { margin-left: auto; }
+.sperrliste .toolbar input { flex: 1 1 220px; max-width: 360px; height: 36px; padding: 0 10px; border-radius: 9px;
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); font: 14px var(--font); }
+.schritt { display: flex; flex-direction: column; gap: 10px; padding: 12px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 12px; }
+.schritt-kopf { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.schritt-abstand { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--muted); }
+.schritt-abstand input { width: 58px; height: 30px; padding: 0 6px; border-radius: 7px; border: 1px solid var(--border-strong);
+  background: var(--surface-2); color: var(--text); font: 14px var(--font); }
+.kampagne-vorschau { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--hover); }
+.kampagne-vorschau summary { cursor: pointer; font-weight: 500; }
+.kampagne-vorschau .seg { margin: 10px 0 4px; }
+@media (max-width: 900px) {
+  .kampagne-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .kampagne-knoepfe { margin-left: 0; }
+  .kk-zeile { grid-template-columns: 1fr; }
+  .kk-aktionen { justify-content: flex-start; }
+}

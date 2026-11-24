@@ -288,6 +288,7 @@ const ICONS = {
   pin: '<path d="M12 21.5s7-6.4 7-11.5a7 7 0 10-14 0c0 5.1 7 11.5 7 11.5z"/><circle cx="12" cy="10" r="2.5"/>',
   more: '<circle cx="12" cy="5.5" r=".9"/><circle cx="12" cy="12" r=".9"/><circle cx="12" cy="18.5" r=".9"/>',
   archiv: '<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 001.5 1.5h11a1.5 1.5 0 001.5-1.5v-10M10 12.5h4"/>',
+  send: '<path d="M21 3L10.5 13.5"/><path d="M21 3l-6.5 18-4-7.5-7.5-4z"/>',
   sales: '<path d="M4 20h16"/><path d="M5 15.5l4.5-4.5 3.5 3.5 6-6.5"/><path d="M15 8h4v4"/>',
 };
 function Icon({ n }) {
@@ -584,6 +585,7 @@ const TABS = [
   ['board', 'Board', 'board', '#/board'],
   ['sales', 'Sales', 'sales', '#/sales'],
   ['postfach', 'Postfach', 'mail', '#/postfach'],
+  ['kampagnen', 'Kampagnen', 'send', '#/kampagnen'],
   ['kalender', 'Kalender', 'calendar', '#/kalender'],
   ['meetings', 'Meetings', 'mic', '#/meetings'],
   ['kontakte', 'Kontakte', 'person', '#/kontakte'],
@@ -594,6 +596,7 @@ const TABS_HANDY = ['heute', 'board', 'kalender', 'postfach'];
 const TAB_OF = {
   heute: 'heute', board: 'board', karte: 'board', sales: 'sales', postfach: 'postfach', kalender: 'kalender', termin: 'kalender',
   meetings: 'meetings', meeting: 'meetings', kontakte: 'kontakte', kontakt: 'kontakte', firmen: 'firmen', firma: 'firmen',
+  kampagnen: 'kampagnen', kampagne: 'kampagnen',
 };
 // Meetings ohne die (langen) Zusammenfassungen laden, die kommen erst beim Öffnen.
 const MEETING_COLUMNS = 'id,title,held_at,duration_min,project_id,extra_names,fireflies_id,created_at,updated_at';
@@ -623,7 +626,7 @@ function Main({ session }) {
     try {
       const [projects, stages, organizations, persons, allCards, meetings, meeting_persons, events, event_persons,
         card_shares, role, users, project_shares, card_events, card_seen, file_counts, claude, antworten, postfach_neu, einstellungen,
-        aktivitaeten, verkauf] = await Promise.all([
+        aktivitaeten, verkauf, kampagnen, kampagne_schritte, kampagne_kontakte, sperrliste] = await Promise.all([
         ...['projects', 'stages', 'organizations', 'persons', 'cards'].map((t) => db.list(t)),
         db.list('meetings', {}, MEETING_COLUMNS),
         db.list('meeting_persons'),
@@ -642,6 +645,8 @@ function Main({ session }) {
         db.list('nutzer_einstellungen').catch(() => []),
         db.list('aktivitaeten').catch(() => []),
         db.list('verkauf').catch(() => []),
+        // Kampagnen (40_kampagnen.sql), vor der Einrichtung in Supabase einfach leer
+        ...['kampagnen', 'kampagne_schritte', 'kampagne_kontakte', 'sperrliste'].map((t) => db.list(t).catch(() => [])),
       ]);
       projects.sort(bySort);
       stages.sort(bySort);
@@ -655,7 +660,8 @@ function Main({ session }) {
         antworten: antworten || [], postfach_neu: postfach_neu || 0, einstellungen: einstellungen?.[0]?.werte || {},
         aktivitaeten: aktivitaeten || [],
         // Werte und Status (32_verkauf.sql) bekommt ein Gast von der Datenbank nicht, in der Demo auch nicht
-        verkauf: role === 'gast' ? [] : verkauf || [] });
+        verkauf: role === 'gast' ? [] : verkauf || [],
+        kampagnen, kampagne_schritte, kampagne_kontakte, sperrliste });
       setLoadError(null);
     } catch (e) {
       setLoadError(friendly(e));
@@ -673,8 +679,10 @@ function Main({ session }) {
   // Zahlen in der Navigation und „Antwort da“ (27_nachfass.sql). Neue Mails kommen alle 5 Minuten,
   // deshalb holt die offene App diese beiden kleinen Abfragen im selben Takt nach, ohne alles neu zu laden.
   const refreshCounts = useCallback(async () => {
-    const [antworten, neu] = await Promise.all([db.rpc('antworten_offen').catch(() => null), db.rpc('postfach_neu').catch(() => null)]);
-    setData((d) => d && { ...d, ...(antworten ? { antworten } : {}), ...(neu !== null ? { postfach_neu: neu } : {}) });
+    const [antworten, neu, kontakte] = await Promise.all([db.rpc('antworten_offen').catch(() => null), db.rpc('postfach_neu').catch(() => null),
+      db.list('kampagne_kontakte').catch(() => null)]);
+    setData((d) => d && { ...d, ...(antworten ? { antworten } : {}), ...(neu !== null ? { postfach_neu: neu } : {}),
+      ...(kontakte ? { kampagne_kontakte: kontakte } : {}) });
   }, []);
   useEffect(() => {
     const t = setInterval(() => { if (document.visibilityState === 'visible') refreshCounts(); }, 5 * 60e3);
@@ -769,6 +777,40 @@ function Main({ session }) {
           await db.remove('verkauf', row.id);
           setData((d) => ({ ...d, verkauf: d.verkauf.filter((x) => x.card_id !== cardId) }));
         } catch (e) { fail(e); throw e; }
+      },
+      // Kampagnen (40_kampagnen.sql): Stand eines Kontakts ersetzen, neue aufnehmen, ändern, frisch laden
+      kkSetzen(row) { if (row) put('kampagne_kontakte', row); },
+      async kkNeu(rows) {
+        try {
+          const saved = await db.insertMany('kampagne_kontakte', rows);
+          setData((d) => ({ ...d, kampagne_kontakte: [...d.kampagne_kontakte, ...saved] }));
+          return saved;
+        } catch (e) { fail(e); throw e; }
+      },
+      async kkAendern(kk, fields, text) {
+        setData((d) => ({ ...d, kampagne_kontakte: d.kampagne_kontakte.map((x) => (x.id === kk.id ? { ...x, ...fields } : x)) }));
+        try {
+          const saved = await db.update('kampagne_kontakte', kk.id, fields);
+          put('kampagne_kontakte', saved);
+          if (text) setToast({ text: `${kk.email} ${text}.` });
+          return saved;
+        } catch (e) { fail(e); load(); return null; }
+      },
+      async kampagneNeuLaden(kid) {
+        const rows = await db.list('kampagne_kontakte', { kampagne_id: kid });
+        setData((d) => ({ ...d, kampagne_kontakte: [...d.kampagne_kontakte.filter((x) => x.kampagne_id !== kid), ...rows] }));
+      },
+      // Auf die Sperrliste. Die Datenbank sperrt betroffene Kontakte in offenen Kampagnen selbst, deshalb danach neu laden.
+      async sperren(eintrag, grund = 'manuell') {
+        const e = String(eintrag || '').trim().toLowerCase();
+        if ((dataRef.current?.sperrliste || []).some((x) => x.eintrag === e)) { setToast({ text: `${e} steht schon auf der Sperrliste.` }); return null; }
+        try {
+          const saved = await db.insert('sperrliste', { owner: me, eintrag: e, grund });
+          const kontakte = await db.list('kampagne_kontakte');
+          setData((d) => ({ ...d, sperrliste: [...d.sperrliste, saved], kampagne_kontakte: kontakte }));
+          setToast({ text: `${e} steht jetzt auf der Sperrliste.` });
+          return saved;
+        } catch (err) { fail(err); throw err; }
       },
       load,
       fail,
@@ -944,7 +986,11 @@ function Main({ session }) {
     });
     // Eigene Aktivität ohne Deal: mir zugewiesen oder von mir angelegt
     const aktMine = (a) => (a.zustaendig ? a.zustaendig.toLowerCase() === me : !a.owner || a.owner.toLowerCase() === me);
+    // Sperrliste der Kampagnen: Adresse oder ganze Domain
+    const sperre = new Set((data.sperrliste || []).map((x) => x.eintrag));
+    const sperrOf = (mail) => { const m = String(mail || '').toLowerCase(); return sperre.has(m) || sperre.has('@' + (m.split('@')[1] || '')); };
     return {
+      sperrOf,
       answerOf,
       verkaufOf: new Map((data.verkauf || []).map((v) => [v.card_id, v])),
       aktOffen,
@@ -986,6 +1032,8 @@ function Main({ session }) {
       f.dueAll.length && `${f.dueAll.length} fällig`].filter(Boolean).join(', ');
     return { n: f.answered.length + f.dueAll.length, title };
   }, [data, idx]);
+  const kStand = useMemo(() => (data ? kampagnenStand(data) : new Map()),
+    [data?.kampagnen, data?.kampagne_schritte, data?.kampagne_kontakte]);
   useEffect(() => {
     if (!data) return;
     if (attention.n) navigator.setAppBadge?.(attention.n).catch(() => {});
@@ -1009,13 +1057,15 @@ function Main({ session }) {
   const isGuest = data.role === 'gast';
   // Archivierte Projekte (35_projekt_archiv.sql) stehen in keiner Auswahl, ihre Namen kennt idx.project weiter
   const ctx = { ...data, projects: data.projects.filter((p) => !p.archiviert), alleProjekte: data.projects,
-    idx, actions, isMobile, session, me, isGuest };
+    idx, actions, isMobile, session, me, isGuest, kStand };
   const renderPage = ([s, id, sub]) => {
     switch (s) {
       case 'board': return html`<${Board} projectId=${id} archiv=${sub === 'archiv'} />`;
       case 'sales': return html`<${SalesPage} projectId=${id} />`;
       case 'meetings': return html`<${MeetingsList} projectId=${id} />`;
       case 'postfach': return html`<${MailboxPage} />`;
+      case 'kampagnen': return html`<${KampagnenPage} />`;
+      case 'kampagne': return html`<${KampagnePage} key=${'k' + id} id=${id} />`;
       case 'kalender': return html`<${CalendarPage} />`;
       case 'kontakte': return html`<${PersonsList} />`;
       case 'kontakt': return html`<${PersonPage} key=${'p' + id} person=${idx.person.get(Number(id))} />`;
@@ -1075,6 +1125,7 @@ function Main({ session }) {
   const navCount = isGuest ? {} : {
     heute: [attention.n, attention.title, 'warn'],
     postfach: [data.postfach_neu || 0, `${data.postfach_neu} neu seit deinem letzten Blick ins Postfach`, ''],
+    kampagnen: (() => { const n = [...kStand.values()].reduce((x, st) => x + st.dran.length, 0); return [n, `Heute ${n} Kampagnen-Mails dran`, '']; })(),
   };
   const countMark = (key) => {
     const [n, title, cls] = navCount[key] || [];
@@ -5325,6 +5376,604 @@ function MailSheet({ query }) {
         Du siehst dann bei der Mail, ob und wann sie geöffnet und welcher Link geklickt wurde. Gespeichert werden nur Zeitpunkt und Link.</p>`}
       ${orig?.body && html`<label class="check-line"><input type="checkbox" checked=${mitVerlauf} onChange=${(e) => setMitVerlauf(e.target.checked)} /> Verlauf anhängen</label>
         ${mitVerlauf && html`<div class="mail-text quote mail-preview">${zitatKopf}${'\n'}${orig.body}</div>`}`}
+    </form>`}
+  <//>`;
+}
+
+// ---------------------------------------------------------------------------
+// Kampagnen: Kaltakquise Stufe 1 (v78, supabase/40_kampagnen.sql)
+// ---------------------------------------------------------------------------
+// Halbautomatisch: Das CRM bereitet erste Mail und Folge-Mails vor, gesendet wird jede Mail einzeln über /senden,
+// ohne Verfolgung. Antworten, Abwesenheitsnotizen, Rückläufer und die Sperrliste setzt die Datenbank selbst um.
+const KK_STATUS = {
+  wartet: ['Wartet', ''], laeuft: ['Läuft', 'laeuft'], fertig: ['Alle Mails gesendet', 'grau'],
+  beantwortet: ['Antwort', 'antwort'], abwesend: ['Abwesend', 'abwesend'], firma: ['Firma hat geantwortet', 'antwort'],
+  ruecklaeufer: ['Rückläufer', 'fehler'], gesperrt: ['Sperrliste', 'fehler'], gestoppt: ['Gestoppt', 'grau'],
+};
+const KK_OFFEN = ['wartet', 'laeuft'];
+const KAMPAGNE_STATUS = { entwurf: 'Entwurf', aktiv: 'Aktiv', pausiert: 'Pausiert', beendet: 'Beendet' };
+const KAMPAGNE_REIHE = { aktiv: 0, entwurf: 1, pausiert: 2, beendet: 3 };
+// Neutrale Vorlage, das Repository ist öffentlich. Die echten Angaben trägt jede Person in ihrer Kampagne ein.
+const SIGNATUR_VORLAGE = `[Your name]
+[Company]
+
+[Company Ltd.], registered in [country], company no. [number]. Registered office: [address]. Directors: [names].
+We found your business contact details on [source] and are writing because our work may be relevant to your role. You can read how we handle your data at [website]/privacy.
+If you would rather not hear from us again, simply reply "no thanks" and we will remove you from our list.`;
+const KK_TITEL = /^(dr|prof|mr|mrs|ms|miss|herr|frau|ing|dipl)\.?$/i;
+const KK_ROLLE = /^(info|kontakt|contact|office|hello|hallo|hi|mail|team|service|support|sales|vertrieb|enquiries|enquiry|reservations?|bookings?|reception|frontdesk|admin|accounts|events|marketing|hr|jobs|careers|post|zentrale|empfang|general|manager|gm)$/i;
+const KK_RECHTSFORM = /\s*,?\s+(ltd\.?|limited|dac|clg|plc|llp|uc|unlimited company|gmbh( & co\.? ?kg)?|ug( \(haftungsbeschränkt\))?|ag|kg|ohg|gbr|e\. ?v\.|inc\.?|llc|b\.v\.|s\.a\.)$/i;
+const KK_ABMELDUNG = /(no,? thanks|not interested|unsubscribe|remove (me|us)|take (me|us) off|do not (contact|email)|don't (contact|email)|stop (emailing|contacting)|kein interesse|nicht interessiert|abmelden|austragen|bitte keine)/i;
+const KK_PLATZHALTER = /\{\{\s*(\w+)\s*(?:\|([^}]*))?\}\}/g;
+const KK_ECKIG = /\[[A-Za-zÄÖÜäöüß .]{3,30}\]/;
+
+const firmaKurz = (name) => String(name || '').replace(KK_RECHTSFORM, '').trim();
+
+// Werte für die Platzhalter. Bei Sammeladressen wie info@ gibt es keinen Vornamen.
+function kkWerte(kk, idx) {
+  const p = idx.person.get(kk.person_id);
+  const o = idx.org.get(kk.org_id ?? p?.org_id);
+  const local = String(kk.email || '').split('@')[0].replace(/[._-]+/g, '');
+  const rolle = KK_ROLLE.test(local) || /\(/.test(p?.name || '');
+  const teile = rolle ? [] : String(p?.name || '').split(/\s+/).filter((t) => t && !KK_TITEL.test(t));
+  return {
+    vorname: teile[0] || '', nachname: teile.length > 1 ? teile.at(-1) : '', name: teile.join(' '),
+    firma: firmaKurz(o?.name), satz: String(kk.satz || '').trim(),
+  };
+}
+
+// {{vorname}}, {{firma}}, {{satz}} … und {{vorname|there}} mit Ersatz. Eine Zeile, die nur aus leeren Platzhaltern
+// besteht, fällt weg. Unbekannte Platzhalter bleiben stehen, damit man sie in der Vorschau sieht.
+function fuelleVorlage(vorlage, werte) {
+  const zeilen = String(vorlage || '').split('\n').map((z) => {
+    const r = z.replace(KK_PLATZHALTER, (m, k, ersatz) => {
+      const key = k.toLowerCase();
+      if (!(key in werte)) return m;
+      return String(werte[key] || ersatz || '').trim();
+    }).replace(/ +([,.!?;:])/g, '$1').replace(/ {2,}/g, ' ');
+    return /^\s*(\{\{[^}]*\}\}\s*)+$/.test(z) && !r.trim() ? null : r;
+  }).filter((z) => z !== null);
+  return zeilen.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// Mail für den nächsten Schritt eines Kontakts. Folge-Mails gehen als Antwort im selben Verlauf.
+function kampagneMail(k, schritte, kk, idx) {
+  const werte = kkWerte(kk, idx);
+  const s1 = schritte.find((s) => s.nr === 1);
+  const s = schritte.find((x) => x.nr === kk.schritt + 1);
+  if (!s || !s1) return null;
+  const b1 = fuelleVorlage(s1.betreff, werte);
+  const betreff = s.nr === 1 ? b1 : /^\s*(re|aw):/i.test(b1) ? b1 : `Re: ${b1}`;
+  const text = [fuelleVorlage(s.text, werte), String(k.signatur || '').trim()].filter(Boolean).join('\n\n');
+  const hinweise = [];
+  const ohneErsatz = (feld) => [...`${s1.betreff}\n${s.text}`.matchAll(KK_PLATZHALTER)].some((m) => m[1].toLowerCase() === feld && !m[2]);
+  if (!werte.vorname && ohneErsatz('vorname')) hinweise.push('Kein Vorname bekannt. Mit {{vorname|there}} steht dann „there“ da.');
+  if (!werte.firma && ohneErsatz('firma')) hinweise.push('Keine Firma am Kontakt.');
+  if (!werte.satz && /\{\{\s*satz/i.test(s.text)) hinweise.push('Noch kein persönlicher Satz für diese Firma.');
+  if (/\{\{[^}]*\}\}/.test(`${betreff}\n${text}`)) hinweise.push('Ein Platzhalter ist unbekannt und steht noch im Text.');
+  if (KK_ECKIG.test(text)) hinweise.push('Im Text oder in der Signatur steht noch eine Angabe in eckigen Klammern.');
+  return { schritt: s, betreff, text, werte, hinweise };
+}
+
+// Je Kampagne: Schritte, Kontakte und was heute dran ist. Folge-Mails gehen vor neuen ersten Mails,
+// zusammen höchstens die Tagesgrenze der Kampagne.
+function kampagnenStand(d) {
+  const heute = todayStr();
+  const gruppe = (list) => {
+    const m = new Map();
+    (list || []).forEach((x) => { if (!m.has(x.kampagne_id)) m.set(x.kampagne_id, []); m.get(x.kampagne_id).push(x); });
+    return m;
+  };
+  const schritteOf = gruppe(d.kampagne_schritte);
+  const kontakteOf = gruppe(d.kampagne_kontakte);
+  const out = new Map();
+  for (const k of d.kampagnen || []) {
+    const schritte = [...(schritteOf.get(k.id) || [])].sort((a, b) => a.nr - b.nr);
+    const kontakte = kontakteOf.get(k.id) || [];
+    const heuteGesendet = kontakte.filter((kk) => kk.gesendet_am && localDay(kk.gesendet_am) === heute).length;
+    const folge = kontakte.filter((kk) => kk.status === 'laeuft' && kk.naechster_am && kk.naechster_am <= heute)
+      .sort((a, b) => a.naechster_am.localeCompare(b.naechster_am) || a.id - b.id);
+    const neu = kontakte.filter((kk) => kk.status === 'wartet').sort((a, b) => a.id - b.id);
+    const s1 = schritte.find((s) => s.nr === 1);
+    const fehlt = [!k.absender && 'Absender fehlt', !(s1?.betreff || '').trim() && 'Betreff der ersten Mail fehlt',
+      !(s1?.text || '').trim() && 'Text der ersten Mail fehlt'].filter(Boolean);
+    const frei = Math.max(0, (k.tageslimit || 20) - heuteGesendet);
+    const dran = k.status === 'aktiv' && !fehlt.length ? [...folge, ...neu].slice(0, frei) : [];
+    out.set(k.id, { schritte, kontakte, heuteGesendet, folge, neu, fehlt, frei, dran });
+  }
+  return out;
+}
+
+// „2 Folge-Mails und 5 erste Mails.“
+function dranText(st) {
+  const f = st.dran.filter((kk) => kk.status === 'laeuft').length;
+  const n = st.dran.length - f;
+  return [f && `${f} ${f === 1 ? 'Folge-Mail' : 'Folge-Mails'}`, n && `${n} ${n === 1 ? 'erste Mail' : 'erste Mails'}`].filter(Boolean).join(' und ') + '.';
+}
+const kkName = (kk, idx) => idx.person.get(kk.person_id)?.name || kk.email;
+const kkAngeschrieben = (l) => l.filter((kk) => kk.schritt > 0);
+// Antworten zählen nur unter den Angeschriebenen. Hat für info@ die Chefin geantwortet, zählt das bei ihr, nicht doppelt.
+const kkAntworten = (l) => l.filter((kk) => kk.schritt > 0 && ['beantwortet', 'firma'].includes(kk.status));
+
+function KampagnenPage() {
+  const { kampagnen, kStand: stand, actions, me } = useApp();
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function anlegen(e) {
+    e.preventDefault();
+    const n = name.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    try {
+      const k = await actions.save('kampagnen', { owner: me, name: n, signatur: SIGNATUR_VORLAGE });
+      await actions.save('kampagne_schritte', { owner: me, kampagne_id: k.id, nr: 1, abstand_tage: 0, betreff: '', text: '' });
+      setName('');
+      go(`#/kampagne/${k.id}`);
+    } catch { /* Meldung kommt über fail */ } finally { setBusy(false); }
+  }
+  const liste = [...kampagnen].sort((a, b) => (KAMPAGNE_REIHE[a.status] ?? 9) - (KAMPAGNE_REIHE[b.status] ?? 9) || byUpdatedDesc(a, b));
+  const dranGesamt = [...stand.values()].reduce((n, s) => n + s.dran.length, 0);
+  return html`<div class="page kampagnen-page">
+    <${PageHead} title="Kampagnen" count=${kampagnen.length} />
+    <p class="muted small seite-text">Eine Kampagne ist eine erste Mail mit Folge-Mails an eine Liste von Kontakten. Das CRM bereitet jede Mail vor,
+      du schickst sie mit einem Klick ab. Antwortet jemand, kommt eine Abwesenheitsnotiz oder eine Mail zurück, hält die Kampagne für diese Person von selbst an.</p>
+    <form class="toolbar wrap" onSubmit=${anlegen}>
+      <input class="kampagne-neu" value=${name} maxlength="120" placeholder="Name der neuen Kampagne" aria-label="Name der neuen Kampagne"
+        onInput=${(e) => setName(e.target.value)} />
+      <button class="btn primary" disabled=${!name.trim() || busy}><${Icon} n="plus" />Neue Kampagne</button>
+    </form>
+    ${dranGesamt > 0 && html`<p class="kampagne-dran-hinweis"><${Icon} n="send" />Heute sind ${dranGesamt} ${dranGesamt === 1 ? 'Mail' : 'Mails'} dran.</p>`}
+    <div class="list">
+      ${liste.map((k) => {
+        const s = stand.get(k.id);
+        const angeschrieben = kkAngeschrieben(s.kontakte).length;
+        const antworten = kkAntworten(s.kontakte).length;
+        const sub = [k.absender || 'noch ohne Absender', `${s.kontakte.length} ${s.kontakte.length === 1 ? 'Kontakt' : 'Kontakte'}`,
+          `${angeschrieben} angeschrieben`, `${antworten} ${antworten === 1 ? 'Antwort' : 'Antworten'}`].join(' · ');
+        return html`<a key=${k.id} class="row" href=${`#/kampagne/${k.id}`}>
+          <div class="row-main"><div class="row-title">${k.name}</div><div class="row-sub">${sub}</div></div>
+          ${s.dran.length > 0 && html`<span class="badge kk-laeuft">${s.dran.length} heute</span>`}
+          <span class=${'badge kampagne-' + k.status}>${KAMPAGNE_STATUS[k.status]}</span>
+        </a>`;
+      })}
+      ${liste.length === 0 && html`<p class="muted pad">Noch keine Kampagne. Gib oben einen Namen ein, zum Beispiel „Hotels Region Nord“.</p>`}
+    </div>
+    <${SperrlisteTile} />
+  </div>`;
+}
+
+function SperrlisteTile() {
+  const { sperrliste, actions } = useApp();
+  const [eintrag, setEintrag] = useState('');
+  const [q, setQ] = useState('');
+  const [alle, setAlle] = useState(false);
+  const GRUND = { abmeldung: 'Abmeldung', ruecklaeufer: 'Rückläufer', manuell: 'Von Hand' };
+  async function add(e) {
+    e.preventDefault();
+    const v = eintrag.trim().toLowerCase();
+    if (!/^(@[^@\s]+\.[^@\s]+|[^@\s]+@[^@\s]+\.[^@\s]+)$/.test(v)) {
+      actions.fail(new Error('Bitte eine Mailadresse oder eine Domain mit @ davor eintragen, etwa @firma.com.'));
+      return;
+    }
+    try { await actions.sperren(v, 'manuell'); setEintrag(''); } catch { /* Meldung kommt über fail */ }
+  }
+  const liste = [...sperrliste].filter((s) => matches(q, s.eintrag, s.notiz || '')).sort((a, b) => ts(b.created_at) - ts(a.created_at));
+  return html`<section class="tile sperrliste">
+    <h2>Sperrliste <span class="count">${sperrliste.length}</span></h2>
+    <p class="muted small">Diese Adressen und Domains bekommen keine Kampagnen-Mail mehr. Abmeldungen und Rückläufer landen hier von selbst,
+      eine ganze Firma sperrst du mit @ und der Domain.</p>
+    <form class="toolbar wrap" onSubmit=${add}>
+      <input value=${eintrag} placeholder="name@firma.com oder @firma.com" aria-label="Adresse oder Domain sperren" onInput=${(e) => setEintrag(e.target.value)} />
+      <button class="btn" disabled=${!eintrag.trim()}>Sperren</button>
+      ${sperrliste.length > 8 && html`<${SearchBox} value=${q} onInput=${setQ} placeholder="In der Sperrliste suchen" />`}
+    </form>
+    ${liste.slice(0, alle ? undefined : 8).map((s) => html`<div key=${s.id} class="sperr-zeile">
+      <span class="sperr-eintrag">${s.eintrag}</span>
+      <span class="muted small">${GRUND[s.grund] || s.grund} · ${shortDate(s.created_at)}</span>
+      <button type="button" class="chip-x" title="Von der Sperrliste nehmen" aria-label=${`${s.eintrag} von der Sperrliste nehmen`}
+        onClick=${() => { if (confirm(`${s.eintrag} wieder freigeben? Kontakte, die deswegen gesperrt sind, bleiben gesperrt.`)) actions.drop('sperrliste', s.id).catch(() => {}); }}>×</button>
+    </div>`)}
+    ${liste.length > 8 && !alle && html`<button type="button" class="btn link sm" onClick=${() => setAlle(true)}>Alle ${liste.length} anzeigen</button>`}
+  </section>`;
+}
+
+let absenderCache = null;
+function useAbsender() {
+  const [list, setList] = useState(absenderCache);
+  useEffect(() => {
+    let alive = true;
+    if (!absenderCache) db.mailAbsender().then((l) => { absenderCache = l; if (alive) setList(l); }).catch(() => { if (alive) setList([]); });
+    return () => { alive = false; };
+  }, []);
+  return list;
+}
+
+function KampagnePage({ id }) {
+  const { kampagnen, kStand: stand, actions } = useApp();
+  const k = kampagnen.find((x) => x.id === Number(id));
+  const [mailOffen, setMailOffen] = useState(false);
+  const [hinzu, setHinzu] = useState(false);
+  // Antworten und Rückläufer setzt die Datenbank, deshalb beim Öffnen den frischen Stand holen
+  useEffect(() => { if (k) actions.kampagneNeuLaden(k.id).catch(() => {}); }, [k?.id]);
+  if (!k) return html`<${NotFound} what="Kampagne" href="#/kampagnen" />`;
+  const st = stand.get(k.id);
+  const angeschrieben = kkAngeschrieben(st.kontakte).length;
+  const antworten = kkAntworten(st.kontakte).length;
+  const quote = angeschrieben ? Math.round((100 * antworten) / angeschrieben) : null;
+  const probleme = st.kontakte.filter((kk) => ['ruecklaeufer', 'gesperrt'].includes(kk.status)).length;
+  const gesendetGesamt = st.kontakte.reduce((n, kk) => n + kk.schritt, 0);
+
+  async function status(neu) {
+    if (neu === 'aktiv' && st.fehlt.length) { actions.fail(new Error(`Noch nicht startklar: ${st.fehlt.join(', ')}.`)); return; }
+    if (neu === 'aktiv' && KK_ECKIG.test(k.signatur || '')
+      && !confirm('In der Signatur stehen noch Angaben in eckigen Klammern, etwa [number]. Trotzdem starten?')) return;
+    try { await actions.save('kampagnen', { id: k.id, status: neu }); } catch { /* Meldung kommt über fail */ }
+  }
+  async function loeschen() {
+    if (!confirm(`Kampagne „${k.name}“ mit allen Mails und Kontakten der Kampagne löschen? Kontakte im CRM bleiben.`)) return;
+    try { await actions.remove('kampagnen', k.id); go('#/kampagnen', true); } catch { /* Meldung kommt über fail */ }
+  }
+
+  return html`<div class="page detail kampagne-page">
+    <a class="back" href="#/kampagnen"><${Icon} n="back" />Kampagnen</a>
+    <div class="kampagne-kopf">
+      <h1>${k.name}</h1>
+      <span class=${'badge kampagne-' + k.status}>${KAMPAGNE_STATUS[k.status]}</span>
+      <div class="kampagne-knoepfe">
+        ${k.status !== 'aktiv' && k.status !== 'beendet' && html`<button class="btn primary sm" onClick=${() => status('aktiv')}>
+          <${Icon} n="send" />${k.status === 'pausiert' ? 'Fortsetzen' : 'Starten'}</button>`}
+        ${k.status === 'aktiv' && html`<button class="btn sm" onClick=${() => status('pausiert')}>Pausieren</button>`}
+        ${k.status !== 'beendet' && k.status !== 'entwurf' && html`<button class="btn sm ghost" onClick=${() => status('beendet')}>Beenden</button>`}
+        ${k.status === 'beendet' && html`<button class="btn sm" onClick=${() => status('pausiert')}>Wieder öffnen</button>`}
+        ${gesendetGesamt === 0 && html`<button class="btn sm ghost danger" onClick=${loeschen}><${Icon} n="trash" />Löschen</button>`}
+      </div>
+    </div>
+    <div class="sales-kpis">
+      <div class="kpi"><span class="kpi-label">Kontakte</span><b class="kpi-num">${st.kontakte.length}</b>
+        <span class="kpi-sub">${st.neu.length} warten auf die erste Mail</span></div>
+      <div class="kpi"><span class="kpi-label">Angeschrieben</span><b class="kpi-num">${angeschrieben}</b>
+        <span class="kpi-sub">${gesendetGesamt} ${gesendetGesamt === 1 ? 'Mail' : 'Mails'} gesendet</span></div>
+      <div class="kpi"><span class="kpi-label"><span class="kpi-dot gewonnen"></span>Antworten</span><b class="kpi-num">${antworten}</b>
+        <span class="kpi-sub">${quote === null ? 'noch niemand angeschrieben' : `${quote}% der Angeschriebenen`}</span></div>
+      <div class="kpi"><span class="kpi-label"><span class="kpi-dot verloren"></span>Rückläufer und gesperrt</span><b class="kpi-num">${probleme}</b>
+        <span class="kpi-sub">${angeschrieben ? `${Math.round((100 * st.kontakte.filter((kk) => kk.status === 'ruecklaeufer').length) / angeschrieben)}% Rückläufer, gut sind unter 2%` : 'Adressen vorher prüfen'}</span></div>
+    </div>
+    <div class="kampagne-grid">
+      <div>
+        <section class="tile kampagne-heute">
+          <h2>Heute dran <span class="count">${st.dran.length}</span></h2>
+          ${k.status !== 'aktiv' ? html`<p class="muted small">${k.status === 'entwurf' ? 'Die Kampagne läuft noch nicht. Mit „Starten“ oben geht es los.'
+              : k.status === 'pausiert' ? 'Die Kampagne ist pausiert.' : 'Die Kampagne ist beendet.'}</p>`
+          : st.fehlt.length ? html`<p class="warnung">Noch nicht startklar: ${st.fehlt.join(', ')}.</p>`
+          : st.dran.length ? html`<p class="muted small">${dranText(st)} Heute schon gesendet: ${st.heuteGesendet} von ${k.tageslimit}.</p>
+              <button class="btn primary" onClick=${() => setMailOffen(true)}><${Icon} n="send" />Mails abarbeiten</button>`
+          : html`<p class="muted small">${st.frei === 0 ? `Die Tagesgrenze von ${k.tageslimit} Mails ist für heute erreicht.`
+              : st.neu.length || st.kontakte.some((kk) => kk.status === 'laeuft') ? 'Für heute ist alles erledigt.'
+              : 'Noch keine Kontakte, die auf eine Mail warten.'}</p>`}
+        </section>
+        <${KampagneKontakte} k=${k} st=${st} onHinzu=${() => setHinzu(true)} />
+      </div>
+      <div>
+        <${KampagneSchritte} k=${k} st=${st} />
+        <${KampagneEinstellungen} k=${k} />
+      </div>
+    </div>
+    ${mailOffen && html`<${KampagneMailSheet} k=${k} st=${st} onClose=${() => { setMailOffen(false); actions.kampagneNeuLaden(k.id).catch(() => {}); }} />`}
+    ${hinzu && html`<${KontakteHinzuSheet} k=${k} st=${st} stand=${stand} onClose=${() => setHinzu(false)} />`}
+  </div>`;
+}
+
+function KampagneEinstellungen({ k }) {
+  const { actions } = useApp();
+  const absender = useAbsender();
+  const [name, setName] = useState(k.name);
+  const [limit, setLimit] = useState(String(k.tageslimit));
+  const [signatur, setSignatur] = useState(k.signatur || '');
+  const speichern = (feld, wert) => {
+    if (String(k[feld] ?? '') === String(wert)) return;
+    actions.save('kampagnen', { id: k.id, [feld]: wert }).catch(() => {});
+  };
+  const boxen = absender || [];
+  return html`<section class="tile">
+    <h2>Einstellungen</h2>
+    <div class="form">
+      <label class="field"><span>Name</span><input value=${name} maxlength="120" onInput=${(e) => setName(e.target.value)}
+        onBlur=${() => name.trim() && speichern('name', name.trim())} /></label>
+      <label class="field"><span>Senden von</span>
+        <select value=${k.absender || ''} onChange=${(e) => speichern('absender', e.target.value || null)}>
+          <option value="">Bitte wählen</option>
+          ${k.absender && !boxen.some((b) => b.address === k.absender) && html`<option value=${k.absender}>${k.absender}</option>`}
+          ${boxen.map((b) => html`<option key=${b.address} value=${b.address}>${b.address}</option>`)}
+        </select></label>
+      ${absender && !boxen.length && html`<p class="muted small">Noch darf kein Postfach senden. Das schaltest du in den Einstellungen bei einem Postfach frei.</p>`}
+      <p class="muted small">Für Kaltakquise am besten ein eigenes Postfach auf einer eigenen Domain, nicht das Hauptpostfach.</p>
+      <label class="field"><span>Höchstens Mails am Tag</span><input type="number" min="1" max="100" value=${limit}
+        onInput=${(e) => setLimit(e.target.value)}
+        onBlur=${() => { const n = Math.min(100, Math.max(1, Math.round(Number(limit) || 20))); setLimit(String(n)); speichern('tageslimit', n); }} /></label>
+      <p class="muted small">Ein neues Postfach fängt mit 5 bis 10 am Tag an und steigt über drei bis vier Wochen auf 20 bis 25.</p>
+      <label class="field"><span>Signatur und Pflichtangaben</span>
+        <textarea rows="9" value=${signatur} onInput=${(e) => setSignatur(e.target.value)} onBlur=${() => speichern('signatur', signatur)}></textarea></label>
+      <p class="muted small">Steht unter jeder Mail der Kampagne, die Gmail-Signatur bleibt bei Kampagnen weg. Dazu gehören Firmenname, Registernummer,
+        Sitz, woher die Adresse stammt, ein Link zur Datenschutzerklärung und wie man sich abmeldet.
+        ${KK_ECKIG.test(signatur) && html` <span class="warnung">Es stehen noch Angaben in eckigen Klammern darin.</span>`}</p>
+    </div>
+  </section>`;
+}
+
+function KampagneSchritte({ k, st }) {
+  const { actions, me, idx } = useApp();
+  const schritte = st.schritte;
+  const letzter = schritte.at(-1);
+  const erreicht = (nr) => st.kontakte.some((kk) => kk.schritt >= nr);
+  async function neu() {
+    const nr = (letzter?.nr || 0) + 1;
+    try {
+      await actions.save('kampagne_schritte', { owner: me, kampagne_id: k.id, nr, abstand_tage: nr === 2 ? 4 : 7, betreff: '', text: '' });
+    } catch { /* Meldung kommt über fail */ }
+  }
+  const muster = st.kontakte.find((kk) => kk.status === 'wartet') || st.kontakte[0];
+  return html`<section class="tile">
+    <h2>Mails <span class="count">${schritte.length}</span></h2>
+    <p class="muted small">Platzhalter: {{vorname}}, {{nachname}}, {{firma}} und {{satz}} für den persönlichen Satz je Kontakt.
+      Mit {{vorname|there}} steht „there“ da, wenn kein Vorname bekannt ist. Folge-Mails gehen als Antwort im selben Verlauf,
+      ihr Betreff ist der der ersten Mail.</p>
+    ${schritte.map((s) => html`<${SchrittEditor} key=${s.id} s=${s} gesperrt=${erreicht(s.nr)} />`)}
+    <div class="form-actions">
+      ${schritte.length < 10 && html`<button type="button" class="btn sm" onClick=${neu}><${Icon} n="plus" />Folge-Mail</button>`}
+      ${letzter && letzter.nr > 1 && !erreicht(letzter.nr) && html`<button type="button" class="btn sm ghost"
+        onClick=${() => actions.drop('kampagne_schritte', letzter.id).catch(() => {})}>Letzte Folge-Mail entfernen</button>`}
+    </div>
+    ${muster && html`<${KampagneVorschau} k=${k} st=${st} kk=${muster} name=${kkName(muster, idx)} />`}
+  </section>`;
+}
+
+function SchrittEditor({ s, gesperrt }) {
+  const { actions } = useApp();
+  const [betreff, setBetreff] = useState(s.betreff);
+  const [text, setText] = useState(s.text);
+  const [abstand, setAbstand] = useState(String(s.abstand_tage));
+  const speichern = (feld, wert) => {
+    if (String(s[feld]) === String(wert)) return;
+    actions.save('kampagne_schritte', { id: s.id, [feld]: wert }).catch(() => {});
+  };
+  return html`<div class="schritt">
+    <div class="schritt-kopf">
+      <b>${s.nr === 1 ? 'Erste Mail' : `Folge-Mail ${s.nr - 1}`}</b>
+      ${s.nr > 1 && html`<label class="schritt-abstand">nach <input type="number" min="1" max="60" value=${abstand}
+        onInput=${(e) => setAbstand(e.target.value)}
+        onBlur=${() => { const n = Math.min(60, Math.max(1, Math.round(Number(abstand) || 3))); setAbstand(String(n)); speichern('abstand_tage', n); }} />
+        Werktagen ohne Antwort</label>`}
+      ${gesperrt && html`<span class="muted small">schon an Kontakte gesendet</span>`}
+    </div>
+    ${s.nr === 1 && html`<label class="field"><span>Betreff</span><input value=${betreff} maxlength="300"
+      onInput=${(e) => setBetreff(e.target.value)} onBlur=${() => speichern('betreff', betreff)} /></label>`}
+    <label class="field"><span>Text</span><textarea rows=${s.nr === 1 ? 9 : 5} value=${text}
+      placeholder=${s.nr === 1 ? 'Hi {{vorname|there}},\n\n{{satz}}\n\n…' : 'Kurze Nachfrage zur Mail von letzter Woche …'}
+      onInput=${(e) => setText(e.target.value)} onBlur=${() => speichern('text', text)}></textarea></label>
+  </div>`;
+}
+
+function KampagneVorschau({ k, st, kk, name }) {
+  const { idx } = useApp();
+  const [nr, setNr] = useState(1);
+  const s = st.schritte.find((x) => x.nr === nr) ? nr : 1;
+  const m = kampagneMail(k, st.schritte, { ...kk, schritt: s - 1 }, idx);
+  if (!m) return null;
+  return html`<details class="kampagne-vorschau">
+    <summary>Vorschau für ${name}</summary>
+    ${st.schritte.length > 1 && html`<div class="seg small">${st.schritte.map((x) => html`<button type="button" key=${x.id}
+      class=${'seg-btn' + (x.nr === s ? ' on' : '')} onClick=${() => setNr(x.nr)}>${x.nr === 1 ? 'Erste' : `Folge ${x.nr - 1}`}</button>`)}</div>`}
+    <p class="small"><b>${m.betreff || '(ohne Betreff)'}</b></p>
+    <div class="mail-text quote">${m.text}</div>
+    ${m.hinweise.map((h) => html`<p class="warnung" key=${h}>${h}</p>`)}
+  </details>`;
+}
+
+const KK_FILTER = [
+  ['dran', 'Heute dran', (kk, st) => st.dran.includes(kk)],
+  ['offen', 'Offen', (kk) => ['wartet', 'laeuft', 'abwesend'].includes(kk.status)],
+  ['antwort', 'Antworten', (kk) => ['beantwortet', 'firma'].includes(kk.status)],
+  ['ende', 'Beendet', (kk) => ['fertig', 'gestoppt', 'ruecklaeufer', 'gesperrt'].includes(kk.status)],
+  ['alle', 'Alle', () => true],
+];
+
+function KampagneKontakte({ k, st, onHinzu }) {
+  const { idx } = useApp();
+  const [filter, setFilter] = useStored('crm-kampagne-filter', 'offen');
+  const [q, setQ] = useState('');
+  const [limit, setLimit] = useState(60);
+  const [antworten, setAntworten] = useState(new Map());
+  // Antworten mit Vorschau holen (nur die, die man sieht)
+  const ids = st.kontakte.map((kk) => kk.antwort_email_id).filter(Boolean);
+  useEffect(() => {
+    const fehlen = ids.filter((x) => !antworten.has(x));
+    if (!fehlen.length) return;
+    db.listIn('emails', 'id', fehlen, 'id,from_email,from_name,subject,snippet,body,sent_at')
+      .then((rows) => setAntworten((m) => new Map([...m, ...rows.map((r) => [r.id, r])]))).catch(() => {});
+  }, [ids.join(',')]);
+  const pruef = KK_FILTER.find((f) => f[0] === filter) || KK_FILTER[1];
+  const zahl = (f) => st.kontakte.filter((kk) => f[2](kk, st)).length;
+  const liste = st.kontakte.filter((kk) => pruef[2](kk, st)
+    && matches(q, kk.email, kkName(kk, idx), idx.org.get(kk.org_id)?.name || ''))
+    .sort((a, b) => ts(b.antwort_am || b.gesendet_am || b.created_at) - ts(a.antwort_am || a.gesendet_am || a.created_at));
+  return html`<section class="tile">
+    <h2>Kontakte <span class="count">${st.kontakte.length}</span>
+      <button type="button" class="btn sm kopf-knopf" onClick=${onHinzu}><${Icon} n="plus" />Hinzufügen</button></h2>
+    <div class="seg small wrap kk-filter">${KK_FILTER.map((f) => html`<button type="button" key=${f[0]}
+      class=${'seg-btn' + (f[0] === pruef[0] ? ' on' : '')} onClick=${() => setFilter(f[0])}>${f[1]} ${zahl(f)}</button>`)}</div>
+    ${st.kontakte.length > 10 && html`<${SearchBox} value=${q} onInput=${setQ} placeholder="Name, Firma oder Adresse" />`}
+    <div class="kk-liste">
+      ${liste.slice(0, limit).map((kk) => html`<${KkZeile} key=${kk.id} kk=${kk} k=${k} st=${st} antwort=${antworten.get(kk.antwort_email_id)} />`)}
+      ${liste.length > limit && html`<button type="button" class="btn ghost full" onClick=${() => setLimit(limit + 100)}>Weitere anzeigen</button>`}
+      ${liste.length === 0 && html`<p class="muted small">${st.kontakte.length ? 'Hier gerade niemand.' : 'Noch keine Kontakte in dieser Kampagne.'}</p>`}
+    </div>
+  </section>`;
+}
+
+function KkZeile({ kk, k, st, antwort }) {
+  const { idx, actions } = useApp();
+  const [satz, setSatz] = useState(kk.satz || '');
+  const p = idx.person.get(kk.person_id);
+  const org = idx.org.get(kk.org_id);
+  const [label, cls] = KK_STATUS[kk.status] || [kk.status, ''];
+  const gesamt = st.schritte.length;
+  const meta = [org?.name, kk.email,
+    kk.schritt > 0 && `${kk.schritt} von ${gesamt} gesendet`,
+    kk.status === 'laeuft' && kk.naechster_am && `nächste ${dueInfo(kk.naechster_am)?.label || kk.naechster_am}`].filter(Boolean).join(' · ');
+  const setze = (fields, text) => actions.kkAendern(kk, fields, text);
+  const snippet = antwort ? String(antwort.snippet || antwort.body || '').replace(/\s+/g, ' ').slice(0, 220) : '';
+  const klingtNachAbmeldung = antwort && KK_ABMELDUNG.test(`${antwort.subject || ''} ${antwort.snippet || antwort.body || ''}`);
+  const gesperrt = idx.sperrOf?.(kk.email);
+  return html`<div class="kk-zeile">
+    <div class="kk-haupt">
+      <div class="row-title">${p ? html`<a href=${`#/kontakt/${p.id}`}>${p.name}</a>` : kk.email}</div>
+      <div class="kk-meta">${meta}</div>
+    </div>
+    <div class="kk-aktionen">
+      <span class=${'badge kk-' + (cls || 'wartet')}>${label}</span>
+      ${kk.status === 'abwesend' && html`<button class="btn xs" onClick=${() => setze({ status: 'laeuft', naechster_am: todayStr() }, 'läuft wieder')}>Weiter senden</button>`}
+      ${KK_OFFEN.includes(kk.status) || kk.status === 'abwesend' ? html`<button class="btn xs ghost" onClick=${() => setze({ status: 'gestoppt', naechster_am: null }, 'angehalten')}>Stoppen</button>`
+      : kk.status === 'gestoppt' && html`<button class="btn xs ghost" onClick=${() => setze(kk.schritt === 0 ? { status: 'wartet' } : { status: 'laeuft', naechster_am: todayStr() }, 'läuft wieder')}>Fortsetzen</button>`}
+      ${kk.status === 'wartet' && html`<button class="chip-x" title="Aus der Kampagne nehmen" aria-label=${`${kk.email} aus der Kampagne nehmen`}
+        onClick=${() => actions.drop('kampagne_kontakte', kk.id).catch(() => {})}>×</button>`}
+    </div>
+    ${kk.status === 'wartet' && html`<input class="kk-satz" value=${satz} maxlength="500" placeholder="Persönlicher Satz für {{satz}}, etwa ein Ablauf, der dort heute von Hand läuft"
+      aria-label="Persönlicher Satz" onInput=${(e) => setSatz(e.target.value)}
+      onBlur=${() => { if (satz.trim() !== (kk.satz || '')) setze({ satz: satz.trim() }); }} />`}
+    ${antwort && html`<div class="kk-antwort">
+      <div class="muted small">${antwort.from_name || antwort.from_email} · ${fullDate(antwort.sent_at)}</div>
+      <div>${snippet}</div>
+      <div class="kk-antwort-knoepfe">
+        <a class="btn xs" href=${`#/mail/neu?antwort=${antwort.id}`}><${Icon} n="reply" />Antworten</a>
+        ${p && ['beantwortet', 'firma'].includes(kk.status) && html`<a class="btn xs ghost" href=${`#/karte/neu?kontakt=${p.id}`}><${Icon} n="plus" />Deal anlegen</a>`}
+        ${!gesperrt && ['beantwortet', 'firma'].includes(kk.status) && html`<button class=${'btn xs' + (klingtNachAbmeldung ? '' : ' ghost')}
+          onClick=${() => actions.sperren(kk.email, 'abmeldung').catch(() => {})}>${klingtNachAbmeldung ? 'Klingt nach Abmeldung, sperren' : 'Auf die Sperrliste'}</button>`}
+      </div>
+    </div>`}
+  </div>`;
+}
+
+function KontakteHinzuSheet({ k, st, stand, onClose }) {
+  const { persons, idx, actions, me, kampagnen } = useApp();
+  const [q, setQ] = useState('');
+  const [label, setLabel] = useState('');
+  const [wahl, setWahl] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+  const labels = useMemo(() => countLabels(persons), [persons]);
+  const inDieser = new Set(st.kontakte.map((kk) => kk.email));
+  // Wer schon in einer anderen offenen Kampagne steckt, bekommt nicht zwei Serien gleichzeitig
+  const woanders = new Map();
+  for (const x of kampagnen) {
+    if (x.id === k.id || x.status === 'beendet') continue;
+    for (const kk of stand.get(x.id)?.kontakte || []) if (['wartet', 'laeuft', 'abwesend'].includes(kk.status)) woanders.set(kk.email, x.name);
+  }
+  const kandidaten = useMemo(() => persons.filter((p) => (p.emails || []).length
+    && (!label || p.labels.includes(label))
+    && matches(q, p.name, idx.org.get(p.org_id)?.name || '', p.emails)).sort(byName), [persons, q, label, idx]);
+  const zustand = (p) => {
+    const mail = p.emails[0].toLowerCase();
+    if (inDieser.has(mail)) return 'schon in dieser Kampagne';
+    if (idx.sperrOf(mail)) return 'auf der Sperrliste';
+    if (woanders.has(mail)) return `läuft schon in „${woanders.get(mail)}“`;
+    return '';
+  };
+  const waehlbar = kandidaten.filter((p) => !zustand(p));
+  const umschalten = (pid) => setWahl((w) => { const n = new Set(w); if (n.has(pid)) n.delete(pid); else n.add(pid); return n; });
+  async function hinzufuegen() {
+    const rows = persons.filter((p) => wahl.has(p.id) && !zustand(p))
+      .map((p) => ({ owner: me, kampagne_id: k.id, person_id: p.id, org_id: p.org_id || null, email: p.emails[0].toLowerCase() }));
+    if (!rows.length) return;
+    setBusy(true);
+    try {
+      await actions.kkNeu(rows);
+      actions.notify(`${rows.length} ${rows.length === 1 ? 'Kontakt' : 'Kontakte'} in „${k.name}“ aufgenommen.`);
+      onClose();
+    } catch { setBusy(false); }
+  }
+  return html`<${Sheet} title="Kontakte hinzufügen" onClose=${onClose}
+      action=${html`<button type="button" class="btn primary sm" disabled=${!wahl.size || busy} onClick=${hinzufuegen}>
+        ${busy ? 'Speichert …' : wahl.size ? `${wahl.size} hinzufügen` : 'Hinzufügen'}</button>`}>
+    <p class="muted small">Es zählt die erste Mailadresse am Kontakt. Sammeladressen wie info@ gehen auch, dann ohne Vorname.</p>
+    <div class="toolbar wrap">
+      <${SearchBox} value=${q} onInput=${setQ} placeholder="Name, Firma oder Adresse" />
+    </div>
+    ${labels.length > 0 && html`<${LabelFilter} labels=${labels} value=${label} onChange=${setLabel} suggestN=${0} />`}
+    <div class="form-actions">
+      <button type="button" class="btn sm" disabled=${!waehlbar.length}
+        onClick=${() => setWahl(new Set([...wahl, ...waehlbar.map((p) => p.id)]))}>Alle ${waehlbar.length} auswählen</button>
+      ${wahl.size > 0 && html`<button type="button" class="btn sm ghost" onClick=${() => setWahl(new Set())}>Auswahl leeren</button>`}
+    </div>
+    <div class="kk-auswahl">
+      ${kandidaten.slice(0, 300).map((p) => {
+        const z = zustand(p);
+        return html`<label key=${p.id} class=${'check-line kk-kandidat' + (z ? ' aus' : '')}>
+          <input type="checkbox" disabled=${!!z} checked=${wahl.has(p.id)} onChange=${() => umschalten(p.id)} />
+          <span class="kk-kandidat-text"><b>${p.name}</b><span class="muted small">${[idx.org.get(p.org_id)?.name, p.emails[0]].filter(Boolean).join(' · ')}</span>
+            ${z && html`<span class="muted small">${z}</span>`}</span>
+        </label>`;
+      })}
+      ${kandidaten.length > 300 && html`<p class="muted small">Die ersten 300 von ${kandidaten.length}. Grenze die Liste mit Suche oder Label ein.</p>`}
+      ${kandidaten.length === 0 && html`<p class="muted small">Keine Kontakte mit Mailadresse gefunden.</p>`}
+    </div>
+  <//>`;
+}
+
+// Mails der Reihe nach: Text prüfen, bei Bedarf ändern, senden, nächste. Vor dem Senden wird der Stand frisch geholt,
+// damit niemand eine Folge-Mail bekommt, der gerade geantwortet hat.
+function KampagneMailSheet({ k, st, onClose }) {
+  const { idx, actions, kampagne_kontakte } = useApp();
+  const [reihe] = useState(() => st.dran.map((kk) => kk.id));
+  const [pos, setPos] = useState(0);
+  const [gesendet, setGesendet] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const kk = kampagne_kontakte.find((x) => x.id === reihe[pos]);
+  const mail = kk && kampagneMail(k, st.schritte, kk, idx);
+  const [betreff, setBetreff] = useState('');
+  const [text, setText] = useState('');
+  useEffect(() => { setBetreff(mail?.betreff || ''); setText(mail?.text || ''); }, [reihe[pos]]);
+  const weiter = () => setPos((x) => x + 1);
+  const fertig = pos >= reihe.length;
+  const name = kk ? kkName(kk, idx) : '';
+
+  async function senden() {
+    if (!kk || !mail || busy) return;
+    if (!text.trim()) { actions.fail(new Error('Der Text ist leer.')); return; }
+    if (KK_ECKIG.test(text) && !confirm('Im Text stehen noch Angaben in eckigen Klammern. Trotzdem senden?')) return;
+    setBusy(true);
+    try {
+      const frisch = await db.get('kampagne_kontakte', kk.id);
+      if (!KK_OFFEN.includes(frisch.status) || frisch.schritt !== kk.schritt) {
+        actions.kkSetzen(frisch);
+        actions.notify(`${name}: ${KK_STATUS[frisch.status]?.[0] || frisch.status}. Diese Mail ging nicht raus.`);
+        weiter();
+        return;
+      }
+      const res = await db.mailSend({
+        von: k.absender, an: kk.email, betreff, text, signatur: false, verfolgen: false,
+        antwort_auf: kk.schritt > 0 ? kk.letzte_gmail_id || null : null,
+      });
+      const neu = await db.rpc('kampagne_gesendet', { p_kontakt: kk.id, p_gmail_id: res?.gmail_id || null, p_thread_id: res?.thread_id || null });
+      if (neu) actions.kkSetzen(Array.isArray(neu) ? neu[0] : neu);
+      setGesendet((n) => n + 1);
+      weiter();
+    } catch (e) { actions.fail(e); } finally { setBusy(false); }
+  }
+
+  return html`<${Sheet} title=${fertig ? 'Fertig für heute' : `Mail ${pos + 1} von ${reihe.length}`} onClose=${onClose}
+      action=${!fertig && html`<button type="button" class="btn primary sm" disabled=${busy || !mail} onClick=${senden}>
+        <${Icon} n="send" />${busy ? 'Sendet …' : 'Senden'}</button>`}>
+    ${fertig ? html`<p>${gesendet} ${gesendet === 1 ? 'Mail' : 'Mails'} gesendet. Sie stehen gleich im Postfach und bei den Kontakten.</p>
+        <button class="btn" onClick=${onClose}>Schließen</button>`
+    : !kk || !mail ? html`<p class="muted">Diese Mail lässt sich nicht vorbereiten.</p><button class="btn" onClick=${weiter}>Weiter</button>`
+    : html`<form class="form" onSubmit=${(e) => e.preventDefault()}>
+      <p class="muted small">${`${mail.schritt.nr === 1 ? 'Erste Mail' : `Folge-Mail ${mail.schritt.nr - 1}, als Antwort im selben Verlauf,`} von ${k.absender} an `}<b>${name}</b>${name !== kk.email ? ` <${kk.email}>` : ''}${idx.org.get(kk.org_id) ? `, ${idx.org.get(kk.org_id).name}` : ''}</p>
+      ${mail.hinweise.map((h) => html`<p class="warnung" key=${h}>${h}</p>`)}
+      <label class="field"><span>Betreff</span><input value=${betreff} maxlength="500" onInput=${(e) => setBetreff(e.target.value)} /></label>
+      <label class="field"><span>Text</span><textarea rows="14" value=${text} onInput=${(e) => setText(e.target.value)}></textarea></label>
+      <p class="muted small">Ohne Öffnen- und Klick-Verfolgung und ohne Gmail-Signatur. Änderungen hier gelten nur für diese eine Mail.</p>
+      <div class="form-actions">
+        <button type="button" class="btn sm ghost" disabled=${busy} onClick=${weiter}>Überspringen</button>
+      </div>
     </form>`}
   <//>`;
 }
