@@ -1,5 +1,5 @@
 import {
-  html, render, useState, useEffect, useMemo, useRef, useCallback, createContext, useContext,
+  html, render, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, createContext, useContext,
 } from './vendor/preact-htm.js';
 import DOMPurify from './vendor/purify.js';
 import { db, DEMO, matchesView } from './db.js';
@@ -104,6 +104,21 @@ const PRIO = {
   niedrig: { label: 'Niedrig', rank: 3 },
 };
 const prioRank = (c) => PRIO[c.priority]?.rank ?? 2;
+// Reihenfolge offener Deals auf Übersicht, Board und in der Liste (v71): Was heute oder früher fällig ist,
+// steht immer oben. Danach Dringlichkeit (hoch, mittel, ohne, niedrig), dann das Datum der nächsten Aktivität,
+// zuletzt das zuletzt Geänderte. Fristen sind seit v68 Aktivitäten und zählen damit mit.
+function dealOrder(idx) {
+  const heute = todayStr();
+  const wann = (c) => idx.nextAkt(c.id)?.faellig || '9';
+  const faellig = (c) => (wann(c) <= heute ? 0 : 1);
+  return (a, b) => faellig(a) - faellig(b) || prioRank(a) - prioRank(b) || wann(a).localeCompare(wann(b)) || byUpdatedDesc(a, b);
+}
+// Wie useStored, aber je Gerät für alle Tabs (localStorage), etwa für die Wahl „Board oder Liste“
+function useGeraet(key, init) {
+  const [v, setV] = useState(() => ls.get(key) ?? init);
+  const set = useCallback((x) => { setV(x); ls.set(key, x); }, [key]);
+  return [v, set];
+}
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -151,7 +166,7 @@ const wertText = (v) => (v === null || v === undefined || v === '' ? '' : Number
 // Aktivitäten (29_aktivitaeten.sql): geplante Schritte an Deal, Kontakt oder Firma, wie in Pipedrive.
 // Die Wiedervorlage ist eine Aktivität der Art „wiedervorlage“.
 const AKT_ARTEN = [['wiedervorlage', 'Wiedervorlage', 'bell'], ['anruf', 'Anruf', 'phone'], ['mail', 'Mail', 'mail'],
-  ['termin', 'Termin', 'calendar'], ['aufgabe', 'Aufgabe', 'check']];
+  ['termin', 'Termin', 'calendar'], ['aufgabe', 'To-do', 'check']];
 const AKT = Object.fromEntries(AKT_ARTEN.map(([k, label, icon]) => [k, { label, icon }]));
 const aktName = (a) => (a.titel || '').trim() || AKT[a.art]?.label || 'Aktivität';
 const aktZeit = (a) => (a.uhrzeit ? String(a.uhrzeit).slice(0, 5) : '');
@@ -186,12 +201,13 @@ const SUGGEST = '#vorschlag';
 const suggestionsFor = (p, idx) => (idx.ownsRow(p) ? (p.label_vorschlag || []).filter((l) => !p.labels.includes(l)) : []);
 
 const safeUrl = (u) => (/^https?:\/\//i.test(u) ? u : 'https://' + u);
+// WhatsApp braucht die Nummer mit Landesvorwahl ohne „+“. Ohne Landesvorwahl gilt sie wie bisher als deutsch.
 function waNumber(phone) {
-  let d = phone.replace(/[^\d+]/g, '');
-  if (d.startsWith('+')) d = d.slice(1);
-  else if (d.startsWith('00')) d = d.slice(2);
-  else if (d.startsWith('0')) d = '49' + d.slice(1);
-  return d;
+  const t = telHref(phone);
+  if (!t) return '';
+  const d = t.slice(4).split(',')[0];
+  if (d.startsWith('+')) return d.slice(1);
+  return d.startsWith('0') ? '49' + d.slice(1) : d;
 }
 
 // Notizen kommen teils als HTML (Pipedrive, Meeting-Zusammenfassungen).
@@ -293,13 +309,34 @@ function App() {
   const [recovery, setRecovery] = useState(false);
   // Zwei-Faktor: null = wird geprüft, sonst { step: 'ok' | 'enroll' | 'challenge', factorId }
   const [mfa, setMfa] = useState(null);
+  // Keine Verbindung: Ist auf dem Gerät eine Anmeldung gespeichert, scheitert beim Start aber das Erneuern,
+  // liegt es fast immer am Netz. Dann zeigt die App spätestens nach 6 Sekunden „Keine Verbindung“ statt der
+  // Anmeldeseite und versucht es bei „online“ und alle 15 Sekunden neu. Abgemeldet wird nur, wenn Supabase
+  // die Anmeldung wirklich ablehnt (SIGNED_OUT, die gespeicherte Anmeldung ist dann weg).
+  const [offline, setOffline] = useState(false);
+  const [versuch, setVersuch] = useState(0);
   useEffect(() => {
-    db.session().then(setSession).catch(() => setSession(null));
+    let alive = true;
+    const wartet = setTimeout(() => { if (alive && db.hasStoredLogin()) setOffline(true); }, 6000);
+    db.session()
+      .then((s) => { if (alive) { setOffline(false); setSession(s ?? null); } })
+      .catch(() => { if (!alive) return; if (db.hasStoredLogin()) setOffline(true); else setSession(null); })
+      .finally(() => clearTimeout(wartet));
+    return () => { alive = false; clearTimeout(wartet); };
+  }, [versuch]);
+  useEffect(() => {
     db.onAuth((s, event) => {
       if (event === 'PASSWORD_RECOVERY') setRecovery(true);
-      setSession(s ?? null);
+      if (s) { setOffline(false); setSession(s); } else if (event === 'SIGNED_OUT' || !db.hasStoredLogin()) { setOffline(false); setSession(null); }
     });
   }, []);
+  useEffect(() => {
+    if (!offline) return undefined;
+    const neu = () => setVersuch((n) => n + 1);
+    window.addEventListener('online', neu);
+    const t = setInterval(neu, 15000);
+    return () => { window.removeEventListener('online', neu); clearInterval(t); };
+  }, [offline]);
   useEffect(() => {
     setMfa(null);
     // Auch beim Zurücksetzen prüfen: Mit eingerichtetem zweitem Faktor nimmt Supabase ein neues Passwort
@@ -319,6 +356,7 @@ function App() {
     // stündlichen Erneuerung und nach neuem Faktor lädt die ganze App neu.
   }, [session ? (session.user?.id || session.user?.email || 'sitzung') : null, recovery]);
 
+  if (offline && !session) return html`<${OfflineScreen} onRetry=${() => setVersuch((n) => n + 1)} />`;
   if (session === undefined) return html`<div class="boot">Lädt …</div>`;
   const loginDone = (s) => { setRecovery(false); setSession(s); };
   if (!session) return html`<${Login} start="login" onDone=${loginDone} />`;
@@ -337,6 +375,17 @@ function App() {
     return html`<${ClaudeConsent} id=${route.query.get('authorization_id')} session=${session} />`;
   }
   return html`<${Main} session=${session} />`;
+}
+
+function OfflineScreen({ onRetry }) {
+  return html`<div class="login-wrap">
+    <div class="login-card">
+      <div class="brand"><${BrandMark} /><span class="brand-name">${APP_NAME}</span></div>
+      <h1 class="login-title">Keine Verbindung</h1>
+      <p class="muted small">Du bist weiter angemeldet. Das CRM erreicht den Server gerade nicht und versucht es von selbst wieder, sobald das Netz zurück ist.</p>
+      <div class="form-actions"><button type="button" class="btn primary" onClick=${onRetry}>Jetzt neu versuchen</button></div>
+    </div>
+  </div>`;
 }
 
 // Freigabe für Claude: Wer den CRM-Connector in Claude verbindet, landet nach der Anmeldung
@@ -1066,7 +1115,9 @@ function Sheet({ title, onClose, action, children }) {
   // Escape soll immer das aktuelle onClose nehmen, nicht das vom ersten Anzeigen
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-  useEffect(() => {
+  // Layout-Effekt: Das Fenster meldet sich beim Zeichnen an, nicht verzögert. Sonst schließt ein schnelles
+  // Escape direkt nach dem Öffnen das Fenster darunter.
+  useLayoutEffect(() => {
     const me = {};
     sheetStack.push(me);
     const onKey = (e) => { if (e.key === 'Escape' && sheetStack.at(-1) === me) closeRef.current(); };
@@ -1325,7 +1376,7 @@ function ProjekteSettings() {
   if (!eigene.length) return null;
   async function umschalten(p) {
     const offen = cards.filter((c) => c.project_id === p.id && !c.archived).length;
-    if (!p.archiviert && !confirm(`„${p.name}“ archivieren? Das Projekt verschwindet aus der Auswahl, ${offen === 1 ? 'sein offener Deal kommt' : `seine ${offen} offenen Deals kommen`} ins Archiv. Gelöscht wird nichts.`)) return;
+    if (!p.archiviert && !confirm(`„${p.name}“ archivieren? Die Pipeline verschwindet aus der Auswahl, ${offen === 1 ? 'ihr offener Deal kommt' : `ihre ${offen} offenen Deals kommen`} ins Archiv. Gelöscht wird nichts.`)) return;
     setBusy(p.id);
     try {
       const n = await db.rpc('projekt_archivieren', { pid: p.id, an: !p.archiviert });
@@ -1334,13 +1385,13 @@ function ProjekteSettings() {
         : `„${p.name}“ archiviert, ${n === 1 ? '1 Deal' : `${n} Deals`} im Archiv.`);
     } catch (e) { actions.fail(e); } finally { setBusy(null); }
   }
-  return html`<div class="field"><span>Projekte</span>
+  return html`<div class="field"><span>Pipelines</span>
     ${eigene.map((p) => html`<div class="projekt-zeile" key=${p.id} style=${`--pc:${p.color}`}>
       <span class="pchip"><span class="dot"></span>${p.name}${p.archiviert ? html` <span class="muted">· archiviert</span>` : ''}</span>
       <button type="button" class="btn ghost xs" disabled=${busy === p.id} onClick=${() => umschalten(p)}>
         ${busy === p.id ? '…' : p.archiviert ? 'Zurückholen' : 'Archivieren'}</button>
     </div>`)}
-    <p class="muted small">Ein archiviertes Projekt steht in keiner Auswahl mehr. Seine Deals bleiben über die Suche oben, bei Kontakt und Firma und in Sales auffindbar.</p>
+    <p class="muted small">Eine archivierte Pipeline steht in keiner Auswahl mehr. Ihre Deals bleiben über die Suche oben, bei Kontakt und Firma und in Sales auffindbar.</p>
   </div>`;
 }
 
@@ -1577,7 +1628,7 @@ function GlobalSearch() {
     return out;
   }, [t, cards, persons, organizations, meetings, idx]);
   const options = t ? [...hits,
-    ...(ziel ? [{ key: 'neu', icon: 'plus', act: true, label: `„${t}“ als Aufgabe anlegen`, sub: `in ${ziel.name}, Spalte To-Dos` }] : []),
+    ...(ziel ? [{ key: 'neu', icon: 'plus', act: true, label: `„${t}“ als Deal anlegen`, sub: `in ${ziel.name}, Spalte To-Dos` }] : []),
     { key: 'mail', icon: 'mail', act: true, label: `„${t}“ in den Mails suchen`, sub: 'öffnet das Postfach mit diesem Suchbegriff' }] : [];
   const close = () => { setQ(''); setOpen(false); setActive(0); ref.current?.blur(); };
   async function pick(o) {
@@ -1611,7 +1662,7 @@ function GlobalSearch() {
   }
   return html`<div class="gsearch" role="search">
     <label class="search"><${Icon} n="search" />
-      <input ref=${ref} type="search" value=${q} placeholder="Suchen oder neue Aufgabe" autocomplete="off" aria-label="Im CRM suchen"
+      <input ref=${ref} type="search" value=${q} placeholder="Suchen oder neuer Deal" autocomplete="off" aria-label="Im CRM suchen"
         title="Suchen in Deals, Kontakten, Firmen und Meetings (Strg+K)"
         onInput=${(e) => { setQ(e.target.value); setOpen(true); setActive(0); }} onFocus=${() => setOpen(true)}
         onBlur=${() => setTimeout(() => setOpen(false), 150)} onKeyDown=${onKey} /></label>
@@ -1821,10 +1872,27 @@ function LabelPicker({ all, value, onChange }) {
   </div>`;
 }
 
-// Nummer zum Wählen: am Handy öffnet der Link direkt den Anruf
-const telHref = (ph) => 'tel:' + String(ph || '').replace(/[^\d+]/g, '');
+// Nummer zum Wählen: am Handy öffnet der Link direkt den Anruf. Hinweise wie „Tel.:“ und „(0)“ fallen weg,
+// „00“ wird „+“, eine abgesetzte 0 nach der Landesvorwahl entfällt (+49 0171 wird +49171, nicht bei Italien),
+// eine Durchwahl hinter „Durchwahl“, „DW“ oder „ext“ wählt das Telefon nach einer Pause.
+// Nummern ohne Landesvorwahl bleiben, wie sie sind: Ob 089 … deutsch oder irisch ist, lässt sich nicht sagen.
+// Mehr als 15 Ziffern sind nicht wählbar (meist zwei Nummern in einem Feld), dann gibt es keinen Link (null).
+function telHref(ph) {
+  let s = String(ph || '').trim();
+  let durchwahl = '';
+  const dw = s.match(/(?:durchwahl|\bdw|\bext\.?)\s*[:.]?\s*(\d+)\s*$/i);
+  if (dw) { durchwahl = dw[1]; s = s.slice(0, dw.index); }
+  s = s.replace(/\(\s*0\s*\)/g, ' ').replace(/^[^\d+]+/, '');
+  if (s.startsWith('00')) s = '+' + s.slice(2);
+  const null0 = s.match(/^\+(\d{1,3})[\s./-]+0(?=\d)/);
+  if (null0 && !['39', '378', '379'].includes(null0[1])) s = '+' + null0[1] + s.slice(null0[0].length);
+  const d = (s.startsWith('+') ? '+' : '') + s.replace(/\D/g, '');
+  const ziffern = d.replace('+', '').length;
+  if (ziffern < 3 || ziffern > 15) return null;
+  return 'tel:' + d + (durchwahl ? ',' + durchwahl : '');
+}
 // Kleines Telefon-Symbol am Ende einer Zeile in Kontaktliste und Firma (Wunsch 08.11.2026)
-const RowCall = ({ phone, name }) => (phone ? html`<a class="icon-btn row-call" href=${telHref(phone)}
+const RowCall = ({ phone, name }) => (telHref(phone) ? html`<a class="icon-btn row-call" href=${telHref(phone)}
   title=${`${name} anrufen: ${phone}`} aria-label=${`${name} anrufen`}><${Icon} n="phone" /></a>` : null);
 
 function ContactActions({ phones = [], emails = [], website }) {
@@ -1832,8 +1900,9 @@ function ContactActions({ phones = [], emails = [], website }) {
   if (!phones.length && !emails.length && !website) return null;
   return html`<div class="contact-actions">
     ${phones.map((ph) => html`<span class="btn-group" key=${'t' + ph}>
-      <a class="btn" href=${telHref(ph)}><${Icon} n="phone" />${ph}</a>
-      <a class="btn" href=${'https://wa.me/' + waNumber(ph)} target="_blank" rel="noopener" title="WhatsApp" aria-label="WhatsApp"><${Icon} n="chat" /></a>
+      ${telHref(ph) ? html`<a class="btn" href=${telHref(ph)}><${Icon} n="phone" />${ph}</a>`
+    : html`<span class="btn static" title="Nicht wählbar, bitte die Nummer prüfen"><${Icon} n="phone" />${ph}</span>`}
+      ${waNumber(ph) && html`<a class="btn" href=${'https://wa.me/' + waNumber(ph)} target="_blank" rel="noopener" title="WhatsApp" aria-label="WhatsApp"><${Icon} n="chat" /></a>`}
     </span>`)}
     ${emails.map((m) => html`<a class="btn" key=${'m' + m} href=${kannSenden ? `#/mail/neu?an=${encodeURIComponent(m)}` : 'mailto:' + m}><${Icon} n="mail" />${m}</a>`)}
     ${website && html`<a class="btn" href=${safeUrl(website)} target="_blank" rel="noopener"><${Icon} n="link" />${website.replace(/^https?:\/\//, '').replace(/\/$/, '')}</a>`}
@@ -1929,7 +1998,7 @@ function FollowUpTile({ open }) {
       ${shownWaiting.map((c) => html`<${TodoRow} key=${'w' + c.id} card=${c} waiting />`)}
       ${waiting.length > 6 && html`<button class="btn link sm" onClick=${() => setAll(!all)}>${all ? 'Weniger anzeigen' : `Alle ${waiting.length} anzeigen`}</button>`}</div>`}
     ${!answered.length && !due.length && !next.length && !waiting.length && html`<p class="muted small">Nichts zum Nachhaken. Leg im Deal oder beim
-      Kontakt eine Aktivität an oder schieb eine Aufgabe nach „Feedback von Anderen“, dann kommt sie hier rechtzeitig wieder hoch.</p>`}
+      Kontakt eine Aktivität an oder schieb einen Deal nach „Feedback von Anderen“, dann kommt er hier rechtzeitig wieder hoch.</p>`}
   <//>`;
 }
 
@@ -1981,12 +2050,10 @@ function Overview() {
   const open = myOpen(cards, me);
   const todo = open.filter((c) => kind(c) === 'todo' || kind(c) === 'doing');
 
-  // Eine Gruppe je Projekt, in der Reihenfolge der Projekte (Spalte sort). Darin nach Dringlichkeit in der
-  // Reihenfolge von prioRank (hoch, mittel, ohne, niedrig), bei gleicher Dringlichkeit das zuerst Fällige oben.
-  // Datum zum Sortieren: die nächste Aktivität
-  const whenOf = (c) => idx.nextAkt(c.id)?.faellig || '9';
-  const sections = projects.map((p) => [p, todo.filter((c) => c.project_id === p.id)
-    .sort((a, b) => prioRank(a) - prioRank(b) || whenOf(a).localeCompare(whenOf(b)) || byUpdatedDesc(a, b))])
+  // Eine Gruppe je Pipeline, in der Reihenfolge der Pipelines (Spalte sort). Darin wie auf dem Board (dealOrder):
+  // Fälliges oben, dann Dringlichkeit, dann das Datum der nächsten Aktivität
+  const order = dealOrder(idx);
+  const sections = projects.map((p) => [p, todo.filter((c) => c.project_id === p.id).sort(order)])
     .filter(([, list]) => list.length > 0);
   const recent = [...meetings].sort(byHeldDesc).slice(0, 6);
   const today = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -2071,7 +2138,7 @@ function Overview() {
               ${showAll[p.id] ? 'Weniger anzeigen' : `Alle ${list.length} anzeigen`}</button>` : null}
           </div>`;
   })}
-        ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Aufgaben oben in der Suche eintippen und „als Aufgabe anlegen“ wählen.</p>`}
+        ${todo.length === 0 && html`<p class="muted small">Nichts offen. Neue Deals oben in der Suche eintippen und „als Deal anlegen“ wählen.</p>`}
       <//>`,
     wiedervorlagen: () => html`<${FollowUpTile} open=${open} />`,
     team: () => html`<${TeamTile} />`,
@@ -2306,7 +2373,7 @@ function SalesPage({ projectId }) {
         <span class="kpi-sub">${dealsText(gewonnen.length)} ${zeitName}</span></div>
       <div class="kpi"><span class="kpi-label"><span class="kpi-dot verloren"></span>Verloren</span><b class="kpi-num">${eur(sum(verloren))}</b>
         <span class="kpi-sub">${dealsText(verloren.length)} ${zeitName}</span></div>
-      <div class="kpi"><span class="kpi-label">Gewinnquote</span><b class="kpi-num">${quote === null ? '–' : `${quote} %`}</b>
+      <div class="kpi"><span class="kpi-label">Gewinnquote</span><b class="kpi-num">${quote === null ? '–' : `${quote}%`}</b>
         <span class="kpi-sub">${quote === null ? `${zeitName === 'insgesamt' ? 'Noch' : `${zeitName[0].toUpperCase()}${zeitName.slice(1)}`} nichts abgeschlossen` : `${gewonnen.length} von ${gewonnen.length + verloren.length} abgeschlossenen`}</span></div>
     </div>
     <div class="sales-zeit"><span class="muted small">Gewonnen und verloren</span>
@@ -2327,7 +2394,7 @@ function SalesPage({ projectId }) {
           ${ohneErgebnis.map((x) => html`<${SalesRow} key=${x.v.id} v=${x.v} card=${x.c} ergebnis />`)}
         </section>`}
         ${!project && jeProjekt.length > 0 && html`<section class="tile">
-          <h2>Offen je Projekt</h2>
+          <h2>Offen je Pipeline</h2>
           ${jeProjekt.map((x) => html`<a key=${x.p.id} class="vk-bar-row" href=${`#/sales/${x.p.id}`} style=${`--pc:${x.p.color}`}
               title=${`${x.p.name}: ${eur(x.sum)} in ${dealsText(x.n)}`}>
             <span class="vk-bar-name"><span class="dot"></span>${x.p.name}<span class="muted"> · ${dealsText(x.n)}</span></span>
@@ -2428,6 +2495,7 @@ function Board({ projectId, archiv = false }) {
   const [adding, setAdding] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [colBusy, setColBusy] = useState(false);
+  const [ansicht, setAnsicht] = useGeraet('crm-board-ansicht', 'board');
   const renameCancelled = useRef(false);
   const aktiv = (id) => projects.find((p) => p.id === Number(id));
   const project = aktiv(projectId) || aktiv(ls.get('crm-project')) || projects[0];
@@ -2440,7 +2508,7 @@ function Board({ projectId, archiv = false }) {
   }, [project?.id]);
 
   async function newProject() {
-    const name = prompt('Name des neuen Projekts:');
+    const name = prompt('Name der neuen Pipeline:');
     if (!name?.trim()) return;
     try {
       const p = await actions.addProject(name.trim(), projects.length);
@@ -2450,11 +2518,11 @@ function Board({ projectId, archiv = false }) {
 
   if (!project) {
     return html`<div class="empty-state">
-      <h2>Noch keine Projekte</h2>
-      <p class="muted">Lege ein Projekt an oder importiere deine Daten aus Pipedrive.</p>
+      <h2>Noch keine Pipelines</h2>
+      <p class="muted">Lege eine Pipeline an oder importiere deine Daten aus Pipedrive.</p>
       ${!DEMO && html`<p class="muted small">Angemeldet als ${session.user?.email}. Wenn hier Daten sein müssten:
         Ist diese Adresse in der Datenbank freigeschaltet?</p>`}
-      <button class="btn primary" onClick=${newProject}>Projekt anlegen</button>
+      <button class="btn primary" onClick=${newProject}>Pipeline anlegen</button>
     </div>`;
   }
 
@@ -2466,7 +2534,9 @@ function Board({ projectId, archiv = false }) {
     && matches(q, c.title, idx.person.get(c.person_id)?.name || '', idx.org.get(c.org_id)?.name || '', c.labels || []));
   const byStage = new Map(cols.map((s) => [s.id, []]));
   visible.forEach((c) => byStage.get(c.stage_id)?.push(c));
-  byStage.forEach((l) => l.sort(byUpdatedDesc));
+  // Offene Spalten wie die Übersicht, „Erledigt“ mit dem zuletzt Geänderten oben
+  const order = dealOrder(idx);
+  byStage.forEach((l, sid) => l.sort(idx.stage.get(sid)?.is_done ? byUpdatedDesc : order));
   // Archiv (33_archiv_erledigte.sql): nach 30 Tagen in „Erledigt“ archiviert die Datenbank selbst.
   // Unter „Erledigt“ führt ein Link ins Archiv, die Suche auf dem Board zeigt Treffer dort mit an.
   const archivCards = cards.filter((c) => c.project_id === project.id && c.archived);
@@ -2550,7 +2620,7 @@ function Board({ projectId, archiv = false }) {
       await actions.drop('stages', removing.stage.id);
       await actions.load();
       const n = removing.ids.length;
-      actions.notify(`Spalte gelöscht, ${n === 1 ? '1 Aufgabe' : `${n} Aufgaben`} verschoben.`);
+      actions.notify(`Spalte gelöscht, ${n === 1 ? '1 Deal' : `${n} Deals`} verschoben.`);
       setRemoving(null);
     } catch (e) { actions.fail(e); actions.load(); } finally { setColBusy(false); }
   }
@@ -2565,11 +2635,17 @@ function Board({ projectId, archiv = false }) {
     ${projects.map((p) => html`<a key=${p.id} href=${`#/board/${p.id}`} class=${'ptab' + (p.id === project.id ? ' on' : '')}
       style=${`--pc:${p.color}`} title=${idx.ownsProject(p.id) ? '' : `Geteilt von ${idx.userName.get(idx.ownerOf(p.id)) || idx.ownerOf(p.id)}`}>
       <span class="dot"></span>${p.name}${!idx.ownsProject(p.id) && html` <${Icon} n="share" />`}</a>`)}
-    <button class="ptab add" onClick=${newProject} title="Projekt anlegen" aria-label="Projekt anlegen">+</button>
+    <button class="ptab add" onClick=${newProject} title="Pipeline anlegen" aria-label="Pipeline anlegen">+</button>
   </div>`;
-  const search = html`<${SearchBox} value=${q} onInput=${setQ} placeholder="Aufgaben durchsuchen" />`;
+  const search = html`<${SearchBox} value=${q} onInput=${setQ} placeholder="Deals durchsuchen" />`;
   const share = html`<${ProjectShare} project=${project} />`;
   const labelFilter = boardLabels.length > 0 && html`<${LabelFilter} labels=${boardLabels} value=${label} onChange=${setLabel} />`;
+  const liste = ansicht === 'liste';
+  const ansichtSchalter = html`<div class="seg ansicht-seg" role="group" aria-label="Ansicht">
+    <button type="button" class=${'seg-btn' + (!liste ? ' on' : '')} aria-pressed=${!liste} onClick=${() => setAnsicht('board')}><${Icon} n="board" />Board</button>
+    <button type="button" class=${'seg-btn' + (liste ? ' on' : '')} aria-pressed=${liste} onClick=${() => setAnsicht('liste')}><${Icon} n="lines" />Liste</button>
+  </div>`;
+  const ersteOffene = cols.find((x) => !x.is_done) || cols[0];
 
   const colMenu = (s, label) => {
     const i = cols.findIndex((x) => x.id === s.id);
@@ -2595,7 +2671,7 @@ function Board({ projectId, archiv = false }) {
   </form>`;
   const removeSheet = removing && html`<${Sheet} title="Spalte löschen" onClose=${() => { if (!colBusy) setRemoving(null); }}>
     <div class="form">
-      <p>In „${removing.stage.name}“ ${removing.ids.length === 1 ? 'liegt noch 1 Aufgabe' : `liegen noch ${removing.ids.length} Aufgaben`}${removing.archived ? `, davon ${removing.archived} archiviert` : ''}. Wohin sollen sie?</p>
+      <p>In „${removing.stage.name}“ ${removing.ids.length === 1 ? 'liegt noch 1 Deal' : `liegen noch ${removing.ids.length} Deals`}${removing.archived ? `, davon ${removing.archived} archiviert` : ''}. Wohin sollen sie?</p>
       <label class="field"><span>Verschieben nach</span>
         <select value=${removing.target} onChange=${(e) => setRemoving({ ...removing, target: Number(e.target.value) })}>
           ${cols.filter((x) => x.id !== removing.stage.id).map((x) => html`<option key=${x.id} value=${x.id}>${x.name}</option>`)}
@@ -2614,7 +2690,7 @@ function Board({ projectId, archiv = false }) {
         onDragStart=${() => setDragId(c.id)} onDragEnd=${() => { setDragId(null); setOver(null); }} />`)}
       ${list.length > limit && html`<button class="btn ghost sm full" onClick=${() => setShowAll({ ...showAll, [s.id]: true })}>
         Alle ${list.length} anzeigen</button>`}
-      ${list.length === 0 && html`<div class="col-empty">${q ? 'Keine Treffer' : 'Keine Aufgaben'}</div>`}
+      ${list.length === 0 && html`<div class="col-empty">${q ? 'Keine Treffer' : 'Keine Deals'}</div>`}
       ${archivLink(s)}`;
   };
   const archivHint = archivHits > 0 && html`<a class="archiv-hint" href=${archivHref}><${Icon} n="search" />
@@ -2622,12 +2698,26 @@ function Board({ projectId, archiv = false }) {
 
   if (isMobile) {
     const active = cols.find((s) => s.id === mobileStage) || cols[0];
-    if (!active) return html`<div class="board-page">${projectTabs}<p class="muted pad">Dieses Projekt hat keine Spalten.</p></div>`;
+    if (!active) return html`<div class="board-page">${projectTabs}<p class="muted pad">Diese Pipeline hat keine Spalten.</p></div>`;
+    if (liste) {
+      return html`<div class="board-page">
+        ${projectTabs}
+        ${search}
+        ${share}
+        ${labelFilter}
+        ${ansichtSchalter}
+        ${archivHint}
+        <${DealListe} list=${visible} cols=${cols} />
+        <${Fab} href=${newHref(ersteOffene)} label="Neuer Deal" />
+        ${archivSheet}
+      </div>`;
+    }
     return html`<div class="board-page">
       ${projectTabs}
       ${search}
       ${share}
       ${labelFilter}
+      ${ansichtSchalter}
       ${archivHint}
       <div class="stage-tabs">
         ${cols.map((s) => html`<button key=${s.id} class=${'stab' + (s.id === active.id ? ' on' : '')}
@@ -2640,14 +2730,23 @@ function Board({ projectId, archiv = false }) {
         ${adding ? addForm : renaming?.id === active.id ? renameInput(active) : colMenu(active, 'Spalte bearbeiten')}
       </div>`}
       <div class="mobile-list">${cardList(active, byStage.get(active.id))}</div>
-      <${Fab} href=${newHref(active)} label="Neue Aufgabe" />
+      <${Fab} href=${newHref(active)} label="Neuer Deal" />
       ${removeSheet}
       ${archivSheet}
     </div>`;
   }
 
+  if (liste) {
+    return html`<div class="board-page">
+      <div class="board-head">${projectTabs}${search}${ansichtSchalter}${share}</div>
+      ${labelFilter}
+      ${archivHint}
+      <${DealListe} list=${visible} cols=${cols} neuHref=${newHref(ersteOffene)} />
+      ${archivSheet}
+    </div>`;
+  }
   return html`<div class="board-page">
-    <div class="board-head">${projectTabs}${search}${share}</div>
+    <div class="board-head">${projectTabs}${search}${ansichtSchalter}${share}</div>
     ${labelFilter}
     ${archivHint}
     <div class="board" style=${`--cols:${cols.length + (adding ? 1 : 0)}`} onDragOver=${edgeScroll}>
@@ -2661,7 +2760,7 @@ function Board({ projectId, archiv = false }) {
             ${editCols ? html`<button type="button" class="col-name" onClick=${() => startRename(s)} title="Spalte umbenennen">${s.name}<${Icon} n="edit" /></button>`
             : html`<span>${s.name}</span>`}<span class="count">${byStage.get(s.id).length}</span>
             ${colSum(byStage.get(s.id)) > 0 && html`<span class="col-sum" title=${`Offener Wert in „${s.name}“: ${eur(colSum(byStage.get(s.id)))}`}>${eurKurz(colSum(byStage.get(s.id)))}</span>`}
-            <a class="icon-btn" href=${newHref(s)} title="Aufgabe hinzufügen" aria-label="Aufgabe hinzufügen"><${Icon} n="plus" /></a>
+            <a class="icon-btn" href=${newHref(s)} title="Deal hinzufügen" aria-label="Deal hinzufügen"><${Icon} n="plus" /></a>
             ${editCols && colMenu(s)}`}
         </header>
         <div class="col-body">${cardList(s, byStage.get(s.id))}</div>
@@ -2750,6 +2849,102 @@ function TeamMarks({ card }) {
   return html`${idx.mentionedMe(card) && html`<span class="badge mention-badge" title="Du wurdest in einer Notiz erwähnt">@ dich</span>`}
     ${idx.isNew(card) && html`<span class="badge new" title="Jemand anderes hat seit deinem letzten Öffnen etwas geändert">Neu</span>`}
     ${others.length > 0 && html`<span class="badge assignee" title=${`Zuständig: ${all.map(name).join(', ')}`}>${others.map((n) => n.split(' ')[0]).join(', ')}</span>`}`;
+}
+
+// Board als Liste (v71): dieselben Deals mit denselben Filtern als sortierbare Tabelle, am Handy als Zeilen
+// mit „Sortieren“. Die Sortierung merkt sich das Gerät. Höchstens 100 Zeilen, dann „Alle anzeigen“.
+// Leere Werte (ohne Zuständige, ohne Aktivität, ohne Wert) stehen in beiden Richtungen hinten.
+const LISTE_SPALTEN = [
+  ['deal', 'Deal'], ['spalte', 'Spalte'], ['zustaendig', 'Zuständig'], ['naechste', 'Nächste Aktivität'],
+  ['dringlichkeit', 'Dringlichkeit'], ['wert', 'Wert'], ['geaendert', 'Geändert'],
+];
+const LISTE_ABSTEIGEND = new Set(['wert', 'geaendert']);
+function DealListe({ list, cols, neuHref }) {
+  const { idx, isMobile, isGuest, users, me } = useApp();
+  const [sort, setSort] = useGeraet('crm-liste-sort', 'naechste');
+  const [alle, setAlle] = useState(false);
+  const spalten = LISTE_SPALTEN.filter(([k]) => !(k === 'wert' && isGuest) && !(k === 'zustaendig' && users.length < 2));
+  const key = spalten.some(([k]) => k === sort.replace(/^-/, '')) ? sort.replace(/^-/, '') : 'naechste';
+  const umgekehrt = sort.startsWith('-') && key === sort.slice(1);
+  const stageNr = new Map(cols.map((x, i) => [x.id, i]));
+  const name = (e) => (e === me ? 'Du' : idx.userName.get(e) || e);
+  const zust = (c) => assigneesOf(c).map(name).join(', ');
+  const wert = (c) => { const v = idx.verkaufOf.get(c.id); return v?.wert != null ? Number(v.wert) : null; };
+  const wann = (c) => idx.nextAkt(c.id)?.faellig || '';
+  const order = dealOrder(idx);
+  const vergleich = {
+    deal: (a, b) => a.title.localeCompare(b.title, 'de'),
+    spalte: (a, b) => (stageNr.get(a.stage_id) ?? 99) - (stageNr.get(b.stage_id) ?? 99),
+    zustaendig: (a, b) => zust(a).localeCompare(zust(b), 'de'),
+    naechste: (a, b) => wann(a).localeCompare(wann(b)),
+    dringlichkeit: (a, b) => prioRank(a) - prioRank(b),
+    wert: (a, b) => (wert(b) ?? 0) - (wert(a) ?? 0),
+    geaendert: byUpdatedDesc,
+  }[key];
+  const leer = { zustaendig: (c) => !zust(c), naechste: (c) => !wann(c), wert: (c) => wert(c) == null }[key] || (() => false);
+  const sorted = [...list].sort((a, b) => (leer(a) - leer(b)) || (umgekehrt ? -vergleich(a, b) : vergleich(a, b)) || order(a, b));
+  const shown = alle ? sorted : sorted.slice(0, 100);
+  const pick = (k) => setSort(k === key && !umgekehrt ? '-' + k : k);
+  const pfeil = (k) => (k !== key ? '' : (LISTE_ABSTEIGEND.has(k) !== umgekehrt ? '↓' : '↑'));
+  const ariaSort = (k) => (k !== key ? 'none' : (LISTE_ABSTEIGEND.has(k) !== umgekehrt ? 'descending' : 'ascending'));
+
+  const zelle = (c, k) => {
+    if (k === 'spalte') return idx.stage.get(c.stage_id)?.name || '';
+    if (k === 'zustaendig') return zust(c) || html`<span class="muted">Niemand</span>`;
+    if (k === 'naechste') {
+      const a = idx.nextAkt(c.id);
+      if (!a) return html`<span class="muted">Nichts geplant</span>`;
+      const di = dueInfo(a.faellig);
+      return html`<span class=${'akt-badge ' + (di?.cls || '')} title=${aktName(a)}><${Icon} n=${AKT[a.art]?.icon || 'bell'} />${di?.label}</span>
+        <span class="liste-akt">${aktName(a)}</span>`;
+    }
+    if (k === 'dringlichkeit') return PRIO[c.priority] ? html`<span class=${'prio prio-' + c.priority}>${PRIO[c.priority].label}</span>` : '';
+    if (k === 'wert') {
+      const v = idx.verkaufOf.get(c.id);
+      return v ? html`<span class=${'vk-badge ' + v.status} title=${`Sales: ${VK[v.status]}`}>${v.status === 'gewonnen' && html`<${Icon} n="check" />`}${v.wert != null ? eurKurz(v.wert) : VK[v.status]}</span>` : '';
+    }
+    if (k === 'geaendert') return relDate(c.updated_at);
+    return '';
+  };
+  const unter = (c) => [idx.person.get(c.person_id)?.name, idx.org.get(c.org_id)?.name].filter(Boolean).join(' · ');
+  const mehr = sorted.length > shown.length && html`<button class="btn ghost sm full" onClick=${() => setAlle(true)}>Alle ${sorted.length} anzeigen</button>`;
+  const leerText = list.length === 0 && html`<p class="muted pad">Keine Deals.</p>`;
+
+  if (isMobile) {
+    return html`<div class="deal-liste mobil">
+      <div class="liste-sort">
+        <label>Sortieren
+          <select value=${key} onChange=${(e) => setSort(e.target.value)}>
+            ${spalten.map(([k, l]) => html`<option key=${k} value=${k}>${l}</option>`)}
+          </select></label>
+        <button type="button" class="btn ghost sm" onClick=${() => pick(key)} aria-label="Reihenfolge umdrehen" title="Reihenfolge umdrehen">${pfeil(key)}</button>
+      </div>
+      ${shown.map((c) => html`<a key=${c.id} class="liste-zeile" href=${`#/karte/${c.id}`}>
+        <span class="card-title">${c.title}</span>
+        ${unter(c) && html`<span class="card-meta">${unter(c)}</span>`}
+        <span class="liste-zeile-foot"><span class="muted">${idx.stage.get(c.stage_id)?.name}</span><${CardBadges} card=${c} /></span>
+      </a>`)}
+      ${mehr}${leerText}
+    </div>`;
+  }
+  return html`<div class="deal-liste">
+    <table class="liste-tab">
+      <thead><tr>
+        ${spalten.map(([k, l]) => html`<th key=${k} aria-sort=${ariaSort(k)} class=${'th-' + k}>
+          <button type="button" class="liste-th" onClick=${() => pick(k)}>${l}<span class="liste-pfeil">${pfeil(k)}</span></button></th>`)}
+      </tr></thead>
+      <tbody>
+        ${shown.map((c) => html`<tr key=${c.id} onClick=${(e) => { if (!e.target.closest('a')) go(`#/karte/${c.id}`); }}>
+          ${spalten.map(([k]) => (k === 'deal'
+    ? html`<td key=${k} class="td-deal"><a href=${`#/karte/${c.id}`}>${c.title}</a>${unter(c) && html`<span class="card-meta">${unter(c)}</span>`}</td>`
+    : html`<td key=${k} class=${'td-' + k}>${zelle(c, k)}</td>`))}
+        </tr>`)}
+      </tbody>
+    </table>
+    ${leerText}
+    <div class="liste-fuss">${mehr}${neuHref && html`<a class="btn sm" href=${neuHref}><${Icon} n="plus" />Neuer Deal</a>`}
+      <span class="muted small">${sorted.length === 1 ? '1 Deal' : `${sorted.length} Deals`}</span></div>
+  </div>`;
 }
 
 function CardItem({ card, dragging, onDragStart, onDragEnd }) {
@@ -2846,15 +3041,15 @@ function FilesPanel({ card, cf }) {
 function historyText(e, idx) {
   const d = e.detail;
   switch (e.kind) {
-    case 'angelegt': return 'hat die Karte angelegt';
-    case 'spalte': return `hat sie nach „${d}“ verschoben`;
+    case 'angelegt': return 'hat den Deal angelegt';
+    case 'spalte': return `hat ihn nach „${d}“ verschoben`;
     case 'dringlichkeit': return d ? `hat die Dringlichkeit auf „${PRIO[d]?.label || d}“ gesetzt` : 'hat die Dringlichkeit entfernt';
     case 'faellig': return d ? `hat „fällig am ${new Date(d + 'T12:00').toLocaleDateString('de-DE')}“ gesetzt` : 'hat die Fälligkeit entfernt';
     case 'zustaendig': return d ? `hat ${idx.userName.get(d.toLowerCase()) || d} zuständig gemacht` : 'hat die Zuständigkeit entfernt';
     case 'nicht_zustaendig': return `hat ${idx.userName.get((d || '').toLowerCase()) || d} als zuständig entfernt`;
     case 'titel': return `hat den Titel geändert: „${d}“`;
-    case 'projekt': return `hat sie ins Projekt „${d}“ verschoben`;
-    case 'archiv': return d === 'ja' ? 'hat sie archiviert' : 'hat sie wiederhergestellt';
+    case 'projekt': return `hat ihn in die Pipeline „${d}“ verschoben`;
+    case 'archiv': return d === 'ja' ? 'hat ihn archiviert' : 'hat ihn wiederhergestellt';
     case 'notiz': return 'hat eine Notiz geschrieben';
     case 'erwaehnung': return `hat ${idx.userName.get((d || '').toLowerCase()) || d} erwähnt`;
     case 'datei': return `hat „${d}“ hochgeladen`;
@@ -2962,7 +3157,7 @@ function CardSheet({ id, query }) {
   const close = () => back(isGuest ? '#/geteilt' : card ? `#/board/${card.project_id}` : `#/board/${form.project_id}`);
 
   if (!isNew && !card) {
-    return html`<${Sheet} title="Aufgabe" onClose=${close}><p class="muted">Diese Aufgabe gibt es nicht mehr.</p><//>`;
+    return html`<${Sheet} title="Deal" onClose=${close}><p class="muted">Diesen Deal gibt es nicht mehr.</p><//>`;
   }
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -3032,7 +3227,7 @@ function CardSheet({ id, query }) {
     if (card && vkDirty) saveVk(card.id).catch(() => {});
   }
   async function outOfSales() {
-    if (!confirm('Diesen Deal aus Sales nehmen? Wert und Status werden gelöscht, die Aufgabe bleibt.')) return;
+    if (!confirm('Diesen Deal aus Sales nehmen? Wert und Status werden gelöscht, der Deal bleibt.')) return;
     try {
       await actions.removeVerkauf(card.id);
       setWertIn('');
@@ -3088,7 +3283,7 @@ function CardSheet({ id, query }) {
     try { await actions.save('cards', { id: card.id, archived: !card.archived }); } catch { /* fail */ }
   }
   async function del() {
-    if (!confirm('Aufgabe mit allen Notizen löschen?')) return;
+    if (!confirm('Deal mit allen Notizen löschen?')) return;
     try { await actions.remove('cards', card.id); close(); } catch { /* fail */ }
   }
   // Teilen mit Gästen (z. B. Geschäftspartner): sie sehen nur diese Karte
@@ -3114,10 +3309,10 @@ function CardSheet({ id, query }) {
     if (!list.includes(email)) return;
     const u = users.find((x) => x.email === email);
     if (!isGuest && ownProject && u && !idx.visibleFor(card, email)
-        && confirm(`${u.name} sieht diese Karte noch nicht. Für ${u.name} freigeben?`)) {
+        && confirm(`${u.name} sieht diesen Deal noch nicht. Für ${u.name} freigeben?`)) {
       try {
         await actions.save('card_shares', { card_id: card.id, email });
-        actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
+        actions.notify(`${u.name} sieht diesen Deal jetzt auch.`);
       } catch { /* fail */ }
     }
   }
@@ -3131,47 +3326,78 @@ function CardSheet({ id, query }) {
   const answer = card && !isGuest ? idx.answerOf.get(card.id) : null;
 
   const saveTop = html`<button type="button" class="btn primary sm" disabled=${busy || !form.title.trim()} onClick=${saveAll}
-    title="Aufgabe und angefangene Notiz speichern und schließen">Speichern</button>`;
+    title="Deal und angefangene Notiz speichern und schließen">Speichern</button>`;
   const headActions = html`${card && !isNew && html`<${ClaudeButton} prompt=${claudeAsk.deal(card)} cls="btn sm ghost" label="Claude" />`}${saveTop}`;
-  return html`<${Sheet} title=${isNew ? 'Neue Aufgabe' : 'Aufgabe'} onClose=${leave} action=${headActions}>
+  return html`<${Sheet} title=${isNew ? 'Neuer Deal' : 'Deal'} onClose=${leave} action=${headActions}>
     <div class="drop-zone" ...${dropProps}>
     ${dropping && html`<div class="drop-hint"><${Icon} n="clip" />Dateien hier ablegen, sie hängen dann an „${card.title}“</div>`}
-    <form class="form" onSubmit=${submit}>
-      ${card?.archived && html`<div class="notice">Diese Aufgabe ist archiviert und erscheint nicht auf dem Board. Du findest sie über die Suche oben
-        und im Archiv des Projekts unter „Erledigt“. „Wiederherstellen“ unten holt sie zurück.</div>`}
+    <form class="form" id="deal-form" onSubmit=${submit}>
+      ${card?.archived && html`<div class="notice">Dieser Deal ist archiviert und erscheint nicht auf dem Board. Du findest ihn über die Suche oben
+        und im Archiv der Pipeline unter „Erledigt“. „Wiederherstellen“ unten holt ihn zurück.</div>`}
       ${answer && html`<div class="notice answer-notice">
         <strong>Antwort da:</strong> ${answer.from_name || answer.from_email} hat ${relDate(answer.sent_at).replace(/^\d/, 'am $&')} geschrieben,
-        „${answer.subject || 'ohne Betreff'}“. Der Hinweis verschwindet, sobald du die Aufgabe änderst, eine Notiz schreibst oder antwortest.
+        „${answer.subject || 'ohne Betreff'}“. Der Hinweis verschwindet, sobald du den Deal änderst, eine Notiz schreibst oder antwortest.
         ${kannSenden && html`<div class="notice-actions"><a class="btn sm" href=${`#/mail/neu?antwort=${answer.email_id}`}
           onClick=${(e) => { if (dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) e.preventDefault(); }}><${Icon} n="reply" />Antworten</a></div>`}
       </div>`}
-      ${isGuest && !isNew ? html`<h2 class="ev-sheet-title">${form.title}</h2>
-        <p class="meta">${idx.project.get(form.project_id)?.name}</p>` : html`
+      ${isGuest && !isNew ? html`<h2 class="ev-sheet-title">${form.title}</h2>` : html`
       <label class="field"><span>Titel</span>
         <textarea ref=${titleRef} rows="2" class="title-input" value=${form.title} placeholder="Was ist zu tun?"
           onInput=${(e) => set('title', e.target.value)}
-          onKeyDown=${(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); } }}></textarea></label>
-      ${card && !ownProject && html`<p class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(idx.ownerOf(card.project_id)) || idx.ownerOf(card.project_id)}</p>`}
-      ${card && ownProject && guests.length > 0 && html`<div class="field share-field"><span>Teilen</span>
-        <div class="chips">${guests.map((u) => html`<button type="button" key=${u.email}
-          class=${'chip toggle share' + (shares.some((x) => x.email.toLowerCase() === u.email) ? ' on' : '')}
-          onClick=${() => toggleShare(u)}><${Icon} n="share" />${u.name}</button>`)}</div>
-        <p class="muted small">${sharedNames.length
-    ? `${sharedNames.join(', ')} sieht diese Karte und ihre Notizen, außer denen mit Schloss. Mails, Meetings und andere Karten nicht.`
-    : 'Nur du siehst diese Karte. Antippen, um sie zu teilen.'}</p>
-      </div>`}
-      <label class="field"><span>Projekt</span>
-        <select value=${form.project_id} onChange=${(e) => changeProject(Number(e.target.value))}>
-          ${[...projects, ...(card && !projects.some((p) => p.id === card.project_id) && idx.project.get(card.project_id)
-    ? [idx.project.get(card.project_id)] : [])]
-            .filter((p) => (isGuest ? guestProjects.has(p.id) : ownProject || p.id === card.project_id))
-            .map((p) => html`<option key=${p.id} value=${p.id}>${p.name}${p.archiviert ? ' (archiviert)' : ''}</option>`)}
-        </select></label>`}
-      <div class="field"><span>Spalte</span>
-        <div class="seg wrap">${projStages.map((s) => html`<button type="button" key=${s.id}
-          class=${'seg-btn' + (s.id === form.stage_id ? ' on' : '')} onClick=${() => pickStage(s.id)}>${s.name}</button>`)}</div>
-      </div>
-      ${!isGuest && html`<div class="field-row vk-row">
+          onKeyDown=${(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); } }}></textarea></label>`}
+      <section class="deal-sec sec-ueberblick">
+        <h3 class="deal-sec-h">Überblick</h3>
+        ${isGuest && !isNew ? html`<p class="meta">${idx.project.get(form.project_id)?.name}</p>` : html`
+        ${card && !ownProject && html`<p class="muted small"><${Icon} n="share" /> Geteilt von ${idx.userName.get(idx.ownerOf(card.project_id)) || idx.ownerOf(card.project_id)}</p>`}
+        <label class="field"><span>Pipeline</span>
+          <select value=${form.project_id} onChange=${(e) => changeProject(Number(e.target.value))}>
+            ${[...projects, ...(card && !projects.some((p) => p.id === card.project_id) && idx.project.get(card.project_id)
+      ? [idx.project.get(card.project_id)] : [])]
+              .filter((p) => (isGuest ? guestProjects.has(p.id) : ownProject || p.id === card.project_id))
+              .map((p) => html`<option key=${p.id} value=${p.id}>${p.name}${p.archiviert ? ' (archiviert)' : ''}</option>`)}
+          </select></label>`}
+        <div class="field"><span>Spalte</span>
+          <div class="seg wrap">${projStages.map((s) => html`<button type="button" key=${s.id}
+            class=${'seg-btn' + (s.id === form.stage_id ? ' on' : '')} onClick=${() => pickStage(s.id)}>${s.name}</button>`)}</div>
+        </div>
+        <div class="field"><span>Dringlichkeit</span>
+          <div class="seg">${Object.entries(PRIO).map(([k, p]) => html`<button type="button" key=${k}
+            class=${'seg-btn prio-btn prio-' + k + (form.priority === k ? ' on' : '')}
+            onClick=${() => set('priority', form.priority === k ? null : k)}>${p.label}</button>`)}</div>
+        </div>
+        ${users.length > 1 && html`<div class="field"><span>Zuständig</span>
+          <${MultiPick} options=${assigneeOptions} value=${form.assignees} onToggle=${toggleAssignee} empty="Niemand" /></div>`}
+        ${isGuest ? html`${(person || org) && html`<div class="field"><span>Kontakt</span>
+          <p class="small">${[person?.name, org?.name].filter(Boolean).join(' · ')}</p>
+          ${person && html`<${ContactActions} phones=${person.phones} emails=${person.emails} />`}</div>`}` : html`
+        <div class="field"><span>Kontakt</span>
+          <${Combobox} items=${persons} value=${form.person_id} onChange=${pickPerson} placeholder="Kontakt suchen oder neu anlegen"
+            label=${(p) => p.name} sub=${(p) => idx.org.get(p.org_id)?.name} href=${(p) => `#/kontakt/${p.id}`}
+            onCreate=${async (name) => (await actions.save('persons', { name })).id} />
+          ${person && (person.phones?.length > 0 || (kannSenden && card && person.emails?.[0])) && html`<div class="deal-contact-actions">
+            ${(person.phones || []).filter((ph) => telHref(ph)).slice(0, 2).map((ph) => html`<a key=${ph} class="btn sm" href=${telHref(ph)} title=${`${person.name} anrufen`}>
+              <${Icon} n="phone" />${person.phones.filter((p) => telHref(p)).length > 1 ? ph : 'Anrufen'}</a>`)}
+            ${kannSenden && card && person.emails?.[0] && html`<a class="btn sm" href=${`#/mail/neu?an=${encodeURIComponent(person.emails[0])}`}
+              onClick=${(e) => { if (dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) e.preventDefault(); }}><${Icon} n="mail" />Mail schreiben</a>`}
+          </div>`}</div>
+        <div class="field"><span>Firma</span>
+          <${Combobox} items=${organizations} value=${form.org_id} onChange=${(v) => set('org_id', v)} placeholder="Firma suchen oder neu anlegen"
+            label=${(o) => o.name} href=${(o) => `#/firma/${o.id}`}
+            onCreate=${async (name) => (await actions.save('organizations', { name })).id} /></div>`}
+        <div class="field"><span>Labels</span><${InlineLabels} value=${form.labels} onChange=${setLabels} /></div>
+        ${card && ownProject && guests.length > 0 && html`<div class="field share-field"><span>Teilen</span>
+          <div class="chips">${guests.map((u) => html`<button type="button" key=${u.email}
+            class=${'chip toggle share' + (shares.some((x) => x.email.toLowerCase() === u.email) ? ' on' : '')}
+            onClick=${() => toggleShare(u)}><${Icon} n="share" />${u.name}</button>`)}</div>
+          <p class="muted small">${sharedNames.length
+      ? `${sharedNames.join(', ')} sieht diesen Deal und seine Notizen, außer denen mit Schloss. Mails, Meetings und andere Deals nicht.`
+      : 'Nur du siehst diesen Deal. Antippen, um ihn zu teilen.'}</p>
+        </div>`}
+        ${fromMeeting && html`<p class="meta">Aus dem Meeting <a href=${`#/meeting/${fromMeeting.id}`}>${fromMeeting.title}</a> vom ${shortDate(fromMeeting.held_at)}</p>`}
+      </section>
+      ${!isGuest && html`<section class="deal-sec sec-wert">
+        <h3 class="deal-sec-h">Wert und Status</h3>
+        <div class="field-row vk-row">
         <label class="field vk-wert"><span>Wert netto</span>
           <div class="money-input">
             <input inputmode="decimal" value=${wertIn} placeholder="z. B. 25.000" aria-invalid=${wertFalsch ? 'true' : 'false'}
@@ -3192,42 +3418,24 @@ function CardSheet({ id, query }) {
         : `${VK[vk.status]} am`}
         ${vk.status !== 'offen' && html`<input type="date" class="vk-datum" value=${vk.abgeschlossen_am || ''} aria-label="Abschlussdatum"
           onChange=${(e) => actions.saveVerkauf(card.id, { abgeschlossen_am: e.target.value || null }).catch(() => {})} />`}
-        <button type="button" class="btn link sm" onClick=${outOfSales}>Aus Sales nehmen</button></p>`}`}
-      <div class="field"><span>Dringlichkeit</span>
-        <div class="seg">${Object.entries(PRIO).map(([k, p]) => html`<button type="button" key=${k}
-          class=${'seg-btn prio-btn prio-' + k + (form.priority === k ? ' on' : '')}
-          onClick=${() => set('priority', form.priority === k ? null : k)}>${p.label}</button>`)}</div>
-      </div>
-      ${card && html`<div class="field"><span>${toWait ? 'Warte auf Antwort, wieder vorlegen' : 'Wieder vorlegen'}</span>
+        <button type="button" class="btn link sm" onClick=${outOfSales}>Aus Sales nehmen</button></p>`}
+      </section>`}
+    </form>
+    ${card && html`<${AktivitaetenPanel} cls="deal-sec sec-akt" list=${aktivitaeten.filter((a) => a.card_id === card.id)} neu=${{ card_id: card.id }}>
+      <div class="field wieder-field"><span>${toWait ? 'Warte auf Antwort, wieder vorlegen' : 'Wieder vorlegen'}</span>
         <div class="seg wrap">${FOLLOW_STEPS.map(([d, l]) => html`<button type="button" key=${d} class="seg-btn" onClick=${() => followUp(d)}>in ${l}</button>`)}</div>
-        <p class="muted small">${toWait ? `Schiebt die Aufgabe nach „${waitStage.name}“ und legt` : 'Legt'} eine Aktivität „Wiedervorlage“ an
-          oder verschiebt die vorhandene. Sie steht unten unter „Aktivitäten“ und kommt rechtzeitig auf der Übersicht hoch.</p>
-      </div>`}
-      ${users.length > 1 && html`<div class="field"><span>Zuständig</span>
-        <${MultiPick} options=${assigneeOptions} value=${form.assignees} onToggle=${toggleAssignee} empty="Niemand" /></div>`}
-      <div class="field"><span>Labels</span><${InlineLabels} value=${form.labels} onChange=${setLabels} /></div>
-      ${fromMeeting && html`<p class="meta">Aus dem Meeting <a href=${`#/meeting/${fromMeeting.id}`}>${fromMeeting.title}</a> vom ${shortDate(fromMeeting.held_at)}</p>`}
-      ${isGuest ? html`${(person || org) && html`<div class="field"><span>Kontakt</span>
-        <p class="small">${[person?.name, org?.name].filter(Boolean).join(' · ')}</p>
-        ${person && html`<${ContactActions} phones=${person.phones} emails=${person.emails} />`}</div>`}` : html`
-      <div class="field"><span>Kontakt</span>
-        <${Combobox} items=${persons} value=${form.person_id} onChange=${pickPerson} placeholder="Kontakt suchen oder neu anlegen"
-          label=${(p) => p.name} sub=${(p) => idx.org.get(p.org_id)?.name} href=${(p) => `#/kontakt/${p.id}`}
-          onCreate=${async (name) => (await actions.save('persons', { name })).id} />
-        ${person && (person.phones?.length > 0 || (kannSenden && card && person.emails?.[0])) && html`<div class="deal-contact-actions">
-          ${(person.phones || []).slice(0, 2).map((ph) => html`<a key=${ph} class="btn sm" href=${telHref(ph)} title=${`${person.name} anrufen`}>
-            <${Icon} n="phone" />${person.phones.length > 1 ? ph : 'Anrufen'}</a>`)}
-          ${kannSenden && card && person.emails?.[0] && html`<a class="btn sm" href=${`#/mail/neu?an=${encodeURIComponent(person.emails[0])}`}
-            onClick=${(e) => { if (dirty && !confirm('Ungespeicherte Änderungen verwerfen?')) e.preventDefault(); }}><${Icon} n="mail" />Mail schreiben</a>`}
-        </div>`}</div>
-      <div class="field"><span>Firma</span>
-        <${Combobox} items=${organizations} value=${form.org_id} onChange=${(v) => set('org_id', v)} placeholder="Firma suchen oder neu anlegen"
-          label=${(o) => o.name} href=${(o) => `#/firma/${o.id}`}
-          onCreate=${async (name) => (await actions.save('organizations', { name })).id} /></div>`}
-      ${card ? html`<${FilesPanel} card=${card} cf=${cf} />`
-    : html`<p class="muted small"><${Icon} n="clip" /> Dateien kannst du anhängen, sobald die Aufgabe angelegt ist.</p>`}
+        <p class="muted small">${toWait ? `Schiebt den Deal nach „${waitStage.name}“ und legt` : 'Legt'} eine Aktivität „Wiedervorlage“ an
+          oder verschiebt die vorhandene. Sie kommt rechtzeitig auf der Übersicht hoch.</p>
+      </div>
+    <//>`}
+    ${card && html`<${NotesPanel} filter=${{ card_id: card.id }} pendingRef=${noteRef}
+      defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
+    ${mailPeople.length > 0 && html`<${EmailsPanel} personIds=${mailPeople} />`}
+    ${card ? html`<${FilesPanel} card=${card} cf=${cf} />`
+    : html`<p class="muted small"><${Icon} n="clip" /> Dateien kannst du anhängen, sobald der Deal angelegt ist.</p>`}
+    <div class="deal-foot">
       <div class="form-actions">
-        <button class="btn primary" disabled=${busy || !dirty || !form.title.trim()}>${isNew ? 'Anlegen' : 'Speichern'}</button>
+        <button class="btn primary" form="deal-form" disabled=${busy || !dirty || !form.title.trim()}>${isNew ? 'Anlegen' : 'Speichern'}</button>
         ${card && !isGuest && html`<span class="spacer"></span>
           <button type="button" class="btn ghost" onClick=${archive}>${card.archived ? 'Wiederherstellen' : 'Archivieren'}</button>
           ${ownProject && html`<button type="button" class="btn ghost danger" onClick=${del}>Löschen</button>`}`}
@@ -3237,11 +3445,7 @@ function CardSheet({ id, query }) {
         ${history.map((e) => html`<div class="hist-row" key=${e.id}>
           <span class="muted">${fullDate(e.at)}</span> <strong>${!e.actor ? 'System' : e.actor.toLowerCase() === me ? 'Du' : idx.userName.get(e.actor.toLowerCase()) || e.actor}</strong> ${historyText(e, idx)}</div>`)}
       </details>`}
-    </form>
-    ${card && html`<${AktivitaetenPanel} list=${aktivitaeten.filter((a) => a.card_id === card.id)} neu=${{ card_id: card.id }} />`}
-    ${card && html`<${NotesPanel} filter=${{ card_id: card.id }} pendingRef=${noteRef}
-      defaults=${{ card_id: card.id, person_id: card.person_id, org_id: card.org_id }} />`}
-    ${mailPeople.length > 0 && html`<${EmailsPanel} personIds=${mailPeople} />`}
+    </div>
     </div>
   <//>`;
 }
@@ -3250,7 +3454,7 @@ function CardSheet({ id, query }) {
 // darunter aufklappbar das Erledigte. Nach dem Abhaken fragt der Bereich nach dem nächsten Schritt.
 // list: alle Aktivitäten, die hier gelten (auch erledigte). neu: Verknüpfung für neue ({ card_id } oder { person_id } …).
 // mitDeal: bei Kontakt und Firma steht dabei, an welchem Deal oder Kontakt die Aktivität hängt.
-function AktivitaetenPanel({ list, neu, mitDeal = false }) {
+function AktivitaetenPanel({ list, neu, mitDeal = false, cls = '', children }) {
   const { idx, actions } = useApp();
   const [form, setForm] = useState(null);
   const [weiter, setWeiter] = useState(false);
@@ -3297,7 +3501,7 @@ function AktivitaetenPanel({ list, neu, mitDeal = false }) {
     const p = a.person_id && idx.person.get(a.person_id);
     return p && neu.person_id !== p.id ? html`<a class="akt-bezug" href=${`#/kontakt/${p.id}`} onClick=${(e) => e.stopPropagation()}>${p.name}</a>` : null;
   };
-  return html`<section class="panel akt-panel">
+  return html`<section class=${'panel akt-panel' + (cls ? ' ' + cls : '')}>
     <h3><${Icon} n="bell" />Aktivitäten ${offen.length > 0 && html`<span class="count">${offen.length}</span>`}
       ${!form && html`<button type="button" class="btn sm ghost akt-add" onClick=${() => start()}><${Icon} n="plus" />Aktivität</button>`}</h3>
     ${weiter && !form && html`<div class="akt-weiter"><span>Erledigt. Nächsten Schritt planen?</span>
@@ -3343,6 +3547,7 @@ function AktivitaetenPanel({ list, neu, mitDeal = false }) {
         <button type="button" class="btn link sm" onClick=${() => actions.aktAendern(a, { erledigt_at: null, erledigt_von: null })}>Wieder öffnen</button>
       </div>`)}
     </details>`}
+    ${children}
   </section>`;
 }
 
@@ -3355,8 +3560,8 @@ function CardsPanel({ cards, newHref }) {
   const archivedCount = cards.length - active.length;
   const list = showArchived ? sorted : active;
   return html`<section class="panel">
-    <h3>Aufgaben <span class="count">${active.length}</span>
-      <a class="icon-btn" href=${newHref} title="Aufgabe hinzufügen" aria-label="Aufgabe hinzufügen"><${Icon} n="plus" /></a></h3>
+    <h3>Deals <span class="count">${active.length}</span>
+      <a class="icon-btn" href=${newHref} title="Deal hinzufügen" aria-label="Deal hinzufügen"><${Icon} n="plus" /></a></h3>
     ${list.map((c) => {
     const st = idx.stage.get(c.stage_id);
     const pr = idx.project.get(c.project_id);
@@ -3366,7 +3571,7 @@ function CardsPanel({ cards, newHref }) {
       <span class="mini-meta"><span class="dot"></span>${pr?.name} · ${st?.name}${c.archived ? ' · archiviert' : ''}</span>
     </a>`;
   })}
-    ${list.length === 0 && html`<p class="muted small">Keine Aufgaben.</p>`}
+    ${list.length === 0 && html`<p class="muted small">Keine Deals.</p>`}
     ${archivedCount > 0 && html`<button class="btn link sm" onClick=${() => setShowArchived(!showArchived)}>
       ${showArchived ? 'Archiv ausblenden' : `Archiv anzeigen (${archivedCount})`}</button>`}
   </section>`;
@@ -3398,12 +3603,12 @@ function GuestHome() {
   };
   return html`<div class="page">
     <${PageHead} title="Mit dir geteilt" count=${list.length} />
-    ${owners && html`<p class="muted small">Von ${owners}. Du kannst Notizen schreiben, Aktivitäten planen und Spalte, Dringlichkeit und Zuständigkeit ändern. In ganz geteilten Projekten kannst du auch Deals anlegen.</p>`}
+    ${owners && html`<p class="muted small">Von ${owners}. Du kannst Notizen schreiben, Aktivitäten planen und Spalte, Dringlichkeit und Zuständigkeit ändern. In ganz geteilten Pipelines kannst du auch Deals anlegen.</p>`}
     ${mine.length > 0 && html`<section class="panel"><h3>Für dich <span class="count">${mine.length}</span></h3>${mine.map(row)}</section>`}
     ${byProject.size === 0
     ? html`<div class="empty-state"><h2>Noch nichts geteilt</h2><p class="muted">Sobald ein Deal mit dir geteilt wird, steht er hier.</p></div>`
     : [...byProject.entries()].map(([pid, cs]) => html`<section class="panel" key=${pid}>
-        <h3>${idx.project.get(pid)?.name || 'Projekt'} <span class="count">${cs.length}</span>
+        <h3>${idx.project.get(pid)?.name || 'Pipeline'} <span class="count">${cs.length}</span>
           ${fullProjects.has(pid) && html`<a class="icon-btn" href=${`#/karte/neu?projekt=${pid}`} title="Deal anlegen" aria-label="Deal anlegen"><${Icon} n="plus" /></a>`}</h3>
         ${cs.map(row)}
         ${cs.length === 0 && html`<p class="muted small">Noch keine Deals.</p>`}
@@ -3473,9 +3678,9 @@ function NotesPanel({ filter, defaults, pendingRef }) {
       for (const email of mentions) {
         const u = users.find((x) => x.email === email);
         if (card && !isGuest && u && idx.ownsProject(card.project_id) && !idx.visibleFor(card, email)
-            && confirm(`${u.name} sieht diese Karte noch nicht und bekommt die Erwähnung erst mit der Freigabe. Für ${u.name} freigeben?`)) {
+            && confirm(`${u.name} sieht diesen Deal noch nicht und bekommt die Erwähnung erst mit der Freigabe. Für ${u.name} freigeben?`)) {
           await actions.save('card_shares', { card_id: card.id, email });
-          actions.notify(`${u.name} sieht diese Karte jetzt auch.`);
+          actions.notify(`${u.name} sieht diesen Deal jetzt auch.`);
         }
       }
       actions.touched(defaults);
@@ -4386,9 +4591,9 @@ function MeetingSheet({ meeting: m }) {
         <input class="title-input" value=${title} onInput=${(e) => setTitle(e.target.value)} onBlur=${saveTitle}
           onKeyDown=${(e) => { if (e.key === 'Enter') e.target.blur(); }} /></label>
       <p class="meta">${fullDate(m.held_at)} Uhr${m.duration_min ? ` · ${m.duration_min} Minuten` : ''}</p>
-      <label class="field"><span>Projekt</span>
+      <label class="field"><span>Pipeline</span>
         <select value=${m.project_id ?? ''} onChange=${(e) => actions.patch('meetings', m.id, { project_id: e.target.value ? Number(e.target.value) : null })}>
-          <option value="">Kein Projekt</option>
+          <option value="">Keine Pipeline</option>
           ${[...projects, ...(m.project_id && !projects.some((p) => p.id === m.project_id) && idx.project.get(m.project_id)
     ? [idx.project.get(m.project_id)] : [])]
             .map((p) => html`<option key=${p.id} value=${p.id}>${p.name}${p.archiviert ? ' (archiviert)' : ''}</option>`)}
@@ -4411,11 +4616,11 @@ function MeetingSheet({ meeting: m }) {
       </div>
     </div>
     ${items.length > 0 && html`<section class="notes action-items">
-      <h3>Aufgaben aus dem Meeting
+      <h3>To-dos aus dem Meeting
         ${openMine > 1 && html`<button type="button" class="btn sm ai-all" onClick=${allToBoard}>Alle ${openMine} aufs Board</button>`}</h3>
       ${mine.map(itemRow)}
-      ${mine.length === 0 && html`<p class="muted small">Für dich wurden keine Aufgaben erkannt.</p>`}
-      ${others.length > 0 && html`<details class="ai-others"><summary>Aufgaben der anderen (${others.length})</summary>
+      ${mine.length === 0 && html`<p class="muted small">Für dich wurden keine To-dos erkannt.</p>`}
+      ${others.length > 0 && html`<details class="ai-others"><summary>To-dos der anderen (${others.length})</summary>
         <p class="muted small">Landen auf dem Board unter „Feedback von Anderen“.</p>
         ${others.map(itemRow)}</details>`}
     </section>`}
@@ -4718,7 +4923,7 @@ function EmailItem({ mail: m, people = [], showBox = false, isNew = false, offen
         <span class="mail-actions" onClick=${(e) => e.stopPropagation()}>
           ${kannSenden ? html`<a class="icon-btn sm" href=${replyHref} title="Antworten" aria-label="Antworten"><${Icon} n="reply" /></a>`
     : gmailUrl && html`<a class="icon-btn sm" href=${gmailUrl} target="_blank" rel="noopener" title="In Gmail öffnen und antworten" aria-label="In Gmail antworten"><${Icon} n="reply" /></a>`}
-          ${taskHref && html`<a class="icon-btn sm" href=${taskHref} title=${`Aufgabe mit ${person.name} anlegen`} aria-label="Aufgabe anlegen"><${Icon} n="board" /></a>`}
+          ${taskHref && html`<a class="icon-btn sm" href=${taskHref} title=${`Deal mit ${person.name} anlegen`} aria-label="Deal anlegen"><${Icon} n="board" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/termin/neu?gast=${person.id}`} title=${`Termin mit ${person.name}`} aria-label="Termin einladen"><${Icon} n="calendar" /></a>`}
           ${person && html`<a class="icon-btn sm" href=${`#/kontakt/${person.id}`} title=${`Kontakt ${person.name} öffnen`} aria-label="Kontakt öffnen"><${Icon} n="person" /></a>`}
           ${offen && html`<button type="button" class="icon-btn sm" onClick=${ausBtn} title="Braucht keine Antwort, ausblenden" aria-label="Braucht keine Antwort"><${Icon} n="check" /></button>`}
@@ -4741,7 +4946,7 @@ function EmailItem({ mail: m, people = [], showBox = false, isNew = false, offen
         ${offen && html`<button type="button" class="btn sm" onClick=${ausBtn}><${Icon} n="check" />Braucht keine Antwort</button>`}
         ${kannSenden && weitere > (out ? 1 : 0) && html`<a class="btn sm" href=${replyHref + '&alle=1'}><${Icon} n="reply" />Allen antworten</a>`}
         ${gmailUrl && html`<a class="btn sm" href=${gmailUrl} target="_blank" rel="noopener"><${Icon} n=${kannSenden ? 'link' : 'reply'} />${kannSenden ? 'In Gmail öffnen' : 'In Gmail antworten'}</a>`}
-        ${taskHref && html`<a class="btn sm" href=${taskHref}><${Icon} n="board" />Aufgabe anlegen</a>`}
+        ${taskHref && html`<a class="btn sm" href=${taskHref}><${Icon} n="board" />Deal anlegen</a>`}
         ${person && html`<a class="btn sm" href=${`#/termin/neu?gast=${person.id}`}><${Icon} n="calendar" />Termin einladen</a>`}
         <${ClaudeButton} prompt=${claudeAsk.mail(m)} />
         ${people.map((p) => html`<a key=${p.id} class="btn sm ghost" href=${`#/kontakt/${p.id}`}><${Icon} n="person" />${p.name}</a>`)}
@@ -5237,7 +5442,7 @@ function CardScanSheet() {
       setStatus('Lädt die Texterkennung, beim ersten Mal etwa 10 MB …');
       const T = await loadTesseract();
       worker = await T.createWorker(['deu', 'eng'], 1, {
-        logger: (m) => { if (m.status === 'recognizing text') setStatus(`Liest die Karte … ${Math.round(m.progress * 100)} %`); },
+        logger: (m) => { if (m.status === 'recognizing text') setStatus(`Liest die Karte … ${Math.round(m.progress * 100)}%`); },
       });
       const { data } = await worker.recognize(canvas);
       setF({ ...parseCard(data.text), unsicher: data.confidence < 70 });
@@ -5371,7 +5576,7 @@ function PersonForm({ person }) {
     } catch { /* fail */ } finally { setBusy(false); }
   }
   async function del() {
-    if (!confirm(`${person.name} löschen?\nAufgaben bleiben erhalten. Notizen, die nur an diesem Kontakt hängen, werden mit gelöscht.`)) return;
+    if (!confirm(`${person.name} löschen?\nDeals bleiben erhalten. Notizen, die nur an diesem Kontakt hängen, werden mit gelöscht.`)) return;
     try {
       await deleteLooseNotes({ person_id: person.id });
       await actions.remove('persons', person.id);
@@ -5524,7 +5729,7 @@ function OrgForm({ org }) {
     } catch { /* fail */ } finally { setBusy(false); }
   }
   async function del() {
-    if (!confirm(`${org.name} löschen?\nKontakte und Aufgaben bleiben erhalten. Notizen, die nur an der Firma hängen, werden mit gelöscht.`)) return;
+    if (!confirm(`${org.name} löschen?\nKontakte und Deals bleiben erhalten. Notizen, die nur an der Firma hängen, werden mit gelöscht.`)) return;
     try {
       await deleteLooseNotes({ org_id: org.id });
       await actions.remove('organizations', org.id);

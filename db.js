@@ -68,11 +68,21 @@ async function oauthCall(method, path, body) {
   return data;
 }
 
+// Liegt auf diesem Gerät eine gespeicherte Anmeldung? (Schlüssel wie in supabase-js: sb-<Projekt>-auth-token)
+// Dann ist ein Fehler beim Erneuern fast immer das Netz und kein Grund für die Anmeldeseite.
+function storedLogin() {
+  try {
+    const key = `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`;
+    return !!JSON.parse(localStorage.getItem(key) || 'null')?.refresh_token;
+  } catch { return false; }
+}
+
 const remote = {
   async session() {
     const c = await client();
     return check(await c.auth.getSession()).session;
   },
+  hasStoredLogin: storedLogin,
   async onAuth(cb) {
     const c = await client();
     c.auth.onAuthStateChange((event, session) => cb(session, event));
@@ -408,6 +418,7 @@ let demoKonten = [
 
 const demo = {
   async session() { return { user: { email: DEMO_GUEST ? 'gast@beispiel.de' : 'demo@beispiel.de' } }; },
+  hasStoredLogin: () => false,
   async onAuth() {},
   async signIn() { return demo.session(); },
   async signUp() { return demo.session(); },
