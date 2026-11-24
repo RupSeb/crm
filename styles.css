@@ -1464,3 +1464,14 @@ body { font-variant-numeric: tabular-nums; }
   .page-head .datum-lang { display: none; }
   .page-head .datum-kurz { display: inline; }
 }
+
+/* Handy (v77): Pipelines und Spalten brechen um statt seitlich zu scrollen */
+@media (max-width: 760px) {
+  .project-tabs, .stage-tabs { flex-wrap: wrap; overflow: visible; margin-left: 0; margin-right: 0; padding-left: 0; padding-right: 0; }
+  .project-tabs { gap: 6px; }
+  .project-tabs .ptab { height: 34px; padding: 0 12px; }
+  .stage-tabs { gap: 6px; }
+  .stab { height: 32px; padding: 0 11px; font-size: 13.5px; gap: 5px; }
+  /* Neue Spalte am Handy über „Spalte bearbeiten“, sonst stünde das Plus allein in einer Zeile */
+  .stage-tabs .stab.add { display: none; }
+}
