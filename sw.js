@@ -3,11 +3,11 @@
 // ankommen. Datenbank-Anfragen (andere Domain) laufen nie über den Cache.
 // „no-cache“: beim Server nachfragen statt bis zu 10 Minuten den Browser-Zwischenspeicher
 // von GitHub Pages zu nehmen. Unveränderte Dateien kosten dabei nur eine kurze Rückfrage.
-const CACHE = 'crm-v69';
+const CACHE = 'crm-v70';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'demo.js', 'config.js',
   'manifest.webmanifest', 'vendor/preact-htm.js', 'vendor/purify.js', 'vendor/supabase.js',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/logo.svg', 'icons/favicon.svg',
+  'icons/crm-192.png', 'icons/crm-512.png', 'icons/crm-apple-180.png', 'icons/logo.svg', 'icons/favicon.svg',
   'vendor/fonts/Geist-Variable.woff2', 'vendor/fonts/GeistMono-Variable.woff2',
   'vendor/fonts/instrument-serif-latin-400-normal.woff2', 'vendor/fonts/instrument-serif-latin-400-italic.woff2',
 ];
@@ -45,7 +45,7 @@ self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data ? e.data.text() : '' }; }
   const jobs = [self.registration.showNotification(d.title || 'CRM', {
-    body: d.body || '', icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', tag: 'wiedervorlagen',
+    body: d.body || '', icon: 'icons/crm-192.png', badge: 'icons/crm-192.png', tag: 'wiedervorlagen',
     data: { url: d.url || '#/heute' },
   })];
   if (d.anzahl != null && self.navigator.setAppBadge) jobs.push(self.navigator.setAppBadge(d.anzahl).catch(() => {}));
