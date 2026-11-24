@@ -589,6 +589,8 @@ const TABS = [
   ['kontakte', 'Kontakte', 'person', '#/kontakte'],
   ['firmen', 'Firmen', 'building', '#/firmen'],
 ];
+// Am Handy stehen unten nur diese vier, alles andere unter „Mehr“ (v75)
+const TABS_HANDY = ['heute', 'board', 'kalender', 'postfach'];
 const TAB_OF = {
   heute: 'heute', board: 'board', karte: 'board', sales: 'sales', postfach: 'postfach', kalender: 'kalender', termin: 'kalender',
   meetings: 'meetings', meeting: 'meetings', kontakte: 'kontakte', kontakt: 'kontakte', firmen: 'firmen', firma: 'firmen',
@@ -604,6 +606,7 @@ function Main({ session }) {
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [toast, setToast] = useState(null);
+  const [mehr, setMehr] = useState(false);
   const lastParts = useRef(null);
   // Aktueller Stand für Aktionen, die nicht bei jeder Änderung neu entstehen
   const dataRef = useRef(null);
@@ -1093,8 +1096,17 @@ function Main({ session }) {
       </header>
       <main class="main">${page}</main>
       <nav class="tabbar">
-        ${tabs.map(([key, label, icon, href]) => html`<a key=${key} href=${href} class=${tab === key ? 'on' : ''}><span class="tab-ico"><${Icon} n=${icon} />${countMark(key)}</span><span>${label}</span></a>`)}
+        ${(isGuest ? tabs : tabs.filter(([key]) => TABS_HANDY.includes(key))).map(([key, label, icon, href]) => html`<a key=${key} href=${href}
+          class=${tab === key ? 'on' : ''} onClick=${() => setMehr(false)}><span class="tab-ico"><${Icon} n=${icon} />${countMark(key)}</span><span>${label}</span></a>`)}
+        ${!isGuest && html`<button type="button" class=${'tab-mehr' + (mehr || !TABS_HANDY.includes(tab) || sec === 'einstellungen' ? ' on' : '')}
+          aria-expanded=${mehr} onClick=${() => setMehr(!mehr)}><span class="tab-ico"><${Icon} n="more" /></span><span>Mehr</span></button>`}
       </nav>
+      ${mehr && !isGuest && html`<div class="mehr-hinten" onClick=${() => setMehr(false)}></div>
+        <nav class="mehr-menue" aria-label="Weitere Bereiche">
+          ${[...tabs.filter(([key]) => !TABS_HANDY.includes(key)), ['einstellungen', 'Einstellungen', 'settings', '#/einstellungen']]
+            .map(([key, label, icon, href]) => html`<a key=${key} href=${href} class=${tab === key || sec === key ? 'on' : ''}
+              onClick=${() => setMehr(false)}><${Icon} n=${icon} /><span>${label}</span>${countMark(key)}</a>`)}
+        </nav>`}
       ${overlay}
       ${toast && html`<div class="toast" role="alert" onClick=${() => setToast(null)}>
         <span>${toast.text}</span>
@@ -1637,11 +1649,15 @@ function SearchBox({ value, onInput, placeholder }) {
 // Kontakte, Firmen und Meetings. Unten in der Liste „+ als Aufgabe anlegen“ und „in den Mails suchen“.
 // Strg+K oder / springt hinein, Pfeile wählen, Enter öffnet, Escape leert.
 function GlobalSearch() {
-  const { cards, persons, organizations, meetings, projects, stages, idx, actions } = useApp();
+  const { cards, persons, organizations, meetings, projects, stages, idx, actions, isMobile } = useApp();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  // Am Handy erst eine Lupe, angetippt liegt die Suche über der ganzen Leiste (v75)
+  const [mobilAuf, setMobilAuf] = useState(false);
   const ref = useRef(null);
+  useEffect(() => { if (mobilAuf) ref.current?.focus(); }, [mobilAuf]);
+  const mobilZu = () => { setMobilAuf(false); setQ(''); setOpen(false); };
   useEffect(() => {
     const onKey = (e) => {
       const el = document.activeElement;
@@ -1681,7 +1697,7 @@ function GlobalSearch() {
   const options = t ? [...hits,
     ...(ziel ? [{ key: 'neu', icon: 'plus', act: true, label: `„${t}“ als Deal anlegen`, sub: `in ${ziel.name}, Spalte To-Dos` }] : []),
     { key: 'mail', icon: 'mail', act: true, label: `„${t}“ in den Mails suchen`, sub: 'öffnet das Postfach mit diesem Suchbegriff' }] : [];
-  const close = () => { setQ(''); setOpen(false); setActive(0); ref.current?.blur(); };
+  const close = () => { setQ(''); setOpen(false); setActive(0); ref.current?.blur(); setMobilAuf(false); };
   async function pick(o) {
     if (!o) return;
     if (o.key === 'neu') {
@@ -1711,7 +1727,12 @@ function GlobalSearch() {
     else if (e.key === 'Enter') { e.preventDefault(); pick(options[active]); }
     else if (e.key === 'Escape') { e.stopPropagation(); if (q) { setQ(''); setActive(0); } else close(); }
   }
-  return html`<div class="gsearch" role="search">
+  if (isMobile && !mobilAuf) {
+    return html`<button type="button" class="icon-btn gsearch-lupe" aria-label="Suchen" title="Suchen"
+      onClick=${() => setMobilAuf(true)}><${Icon} n="search" /></button>`;
+  }
+  return html`<div class=${'gsearch' + (isMobile ? ' mobil-auf' : '')} role="search">
+    ${isMobile && html`<button type="button" class="btn link sm gsearch-zu" onMouseDown=${(e) => e.preventDefault()} onClick=${mobilZu}>Abbrechen</button>`}
     <label class="search"><${Icon} n="search" />
       <input ref=${ref} type="search" value=${q} placeholder="Suchen oder neuer Deal" autocomplete="off" aria-label="Im CRM suchen"
         title="Suchen in Deals, Kontakten, Firmen und Meetings (Strg+K)"
@@ -3849,7 +3870,7 @@ function EventRow({ ev }) {
   const open = () => go('#/termin/' + ev.id);
   return html`<div class=${'ev' + (isPast(ev) ? ' past' : '') + einladungCls(ev)} role="link" tabindex="0"
       style=${`--cc:${ev.calendar_color || '#a9b4ae'}`} onClick=${open} onKeyDown=${(e) => { if (e.key === 'Enter') open(); }}>
-    <div class="ev-time">${timeRange(ev)}</div>
+    <div class="ev-time">${timeRange(ev).split('–').map((t, i) => html`<span key=${i} class=${i ? 'ev-bis' : 'ev-von'}>${i ? html`<span class="ev-strich">–</span>` : ''}${t}</span>`)}</div>
     <div class="ev-main">
       <div class="ev-title">${ev.title}${ev.antwort === 'needsAction' && !isPast(ev) && html` <span class="badge einladung-badge">Einladung offen</span>`}</div>
       <div class="ev-meta"><span class="dot"></span>${cals.join(', ')}${who ? ' · ' + who : ''}</div>

@@ -1409,3 +1409,43 @@ h1, h2, h3 { text-wrap: balance; }
   background: var(--surface-2); border: 1px solid var(--border); font-size: 13px; }
 .spur-klicks { margin: 0; padding-left: 18px; }
 .spur-klicks li { overflow-wrap: anywhere; }
+
+/* Handy (v75): unten vier Reiter und „Mehr“, Suche als Lupe über die ganze Leiste, Kacheln immer volle Breite,
+   Termine mit Uhrzeit untereinander */
+@media (max-width: 760px) {
+  .tiles { align-items: stretch; }
+  .topbar .gsearch-lupe { margin-left: auto; }
+  .topbar .gsearch-lupe + .topnav + .topbar-end { margin-left: 0; }
+  .gsearch.mobil-auf {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+    display: flex; align-items: center; gap: 8px;
+    height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 8px 0 12px;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+  }
+  .gsearch.mobil-auf .search { flex: 1; height: 40px; }
+  .gsearch.mobil-auf .gsearch-zu { order: 2; flex: none; padding: 0 6px; }
+  .tabbar a, .tabbar .tab-mehr { font-size: 11px; }
+  .tabbar .tab-mehr {
+    display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 0 7px;
+    border: 0; background: none; color: var(--muted); font-family: var(--font); font-weight: 500; cursor: pointer;
+  }
+  .tabbar .tab-mehr.on { color: var(--accent); }
+  .tabbar .tab-mehr .ico { width: 23px; height: 23px; }
+  .mehr-hinten { position: fixed; inset: 0; z-index: 19; background: rgba(0, 0, 0, 0.35); }
+  .mehr-menue {
+    position: fixed; left: 10px; right: 10px; bottom: calc(66px + env(safe-area-inset-bottom)); z-index: 21;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px;
+    border: 1px solid var(--border-strong); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-lg);
+  }
+  .mehr-menue a {
+    display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 14px; border-radius: 12px;
+    background: var(--surface-2); color: var(--text); text-decoration: none; font-weight: 500;
+  }
+  .mehr-menue a.on { background: var(--accent-soft); color: var(--gold-l); }
+  .mehr-menue .ico { width: 20px; height: 20px; color: var(--muted); }
+  .mehr-menue .nav-count { margin-left: auto; }
+  .ev-time { width: 46px; }
+  .ev-time span { display: block; }
+  .ev-time .ev-bis { font-size: 11px; opacity: 0.75; }
+  .ev-time .ev-strich { display: none; }
+}
