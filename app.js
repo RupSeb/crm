@@ -279,12 +279,9 @@ function Icon({ n }) {
     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" dangerouslySetInnerHTML=${{ __html: ICONS[n] }}></svg>`;
 }
 
-// Logo: goldene Knotenlinie
+// Logo: das goldene Stratvell-Gehirn mit Schaltkreis (Wunsch 24.11.2026), Quelle Websites/stratvell/assets/favicon.svg
 function BrandMark() {
-  return html`<svg width="34" height="20" viewBox="0 0 34 20" aria-hidden="true">
-    <path d="M5 15 L14 15 L20 5 L29 5" fill="none" stroke="#BF9969" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-    <circle cx="5" cy="15" r="3.2" fill="#BF9969" /><circle cx="29" cy="5" r="3.2" fill="#BF9969" />
-  </svg>`;
+  return html`<img class="brand-mark" src="icons/logo.svg" alt="" width="32" height="26" aria-hidden="true" />`;
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +373,7 @@ function ClaudeConsent({ id, session }) {
   try { target = new URL(info?.redirect_uri).host; } catch { /* ohne Ziel */ }
   return html`<div class="login-wrap">
     <div class="login-card">
-      <div class="brand"><${BrandMark} />${APP_NAME}</div>
+      <div class="brand"><${BrandMark} /><span class="brand-name">${APP_NAME}</span></div>
       <h1 class="login-title">Zugriff freigeben</h1>
       ${info ? html`
         <p><strong>${info.client?.name || info.client?.client_name || 'Ein Programm'}</strong> möchte in deinem Namen auf das CRM zugreifen.</p>
@@ -456,7 +453,7 @@ function MfaScreen({ step, factorId, onDone, note = '' }) {
 
   return html`<div class="login-wrap">
     <div class="login-card">
-      <div class="brand"><${BrandMark} />${APP_NAME}</div>
+      <div class="brand"><${BrandMark} /><span class="brand-name">${APP_NAME}</span></div>
       <h1 class="login-title">${step === 'enroll' ? 'Zwei-Faktor einrichten' : 'Bestätigungscode'}</h1>
       ${step === 'enroll' ? html`
         <p class="muted small">Zum Schutz deiner Daten fragt das CRM nach dem Passwort zusätzlich einen 6-stelligen Code ab. Den erzeugt dein Passwort-Manager oder eine Authenticator-App.</p>
@@ -507,7 +504,7 @@ function Login({ start, onDone }) {
   const titles = { login: 'Anmelden', signup: 'Konto anlegen', reset: 'Passwort vergessen', newpass: 'Neues Passwort' };
   return html`<div class="login-wrap">
     <div class="login-card">
-      <div class="brand"><${BrandMark} />${APP_NAME}</div>
+      <div class="brand"><${BrandMark} /><span class="brand-name">${APP_NAME}</span></div>
       <form class="form" onSubmit=${submit}>
         <h1 class="login-title">${titles[mode]}</h1>
         ${mode !== 'newpass' && html`<label class="field"><span>E-Mail</span>

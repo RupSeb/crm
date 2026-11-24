@@ -140,7 +140,9 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px; letter-spacing: -0.01em; color: var(--text); text-decoration: none; }
-.brand svg { flex: none; }
+.brand-mark { flex: none; display: block; height: 26px; width: auto; }
+/* „CRM“ neben dem Gehirn: Großbuchstaben in Geist Mono wie die Beschriftungen bei Stratvell */
+.brand-name { font: 600 13px var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold-l); }
 .topnav { display: flex; gap: 4px; }
 .topnav a { padding: 7px 14px; border-radius: 999px; color: var(--muted); text-decoration: none; font-weight: 500; }
 .topnav a:hover { color: var(--text); background: var(--hover); }
@@ -177,7 +179,8 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .gsearch-list li.gs-act .gs-label, .gsearch-list li.gs-act .gs-ico { color: var(--accent); font-weight: 600; }
 /* Platz in der Leiste: Reiter etwas enger, Name neben dem Logo erst bei viel Platz */
 @media (max-width: 1240px) { .topnav a { padding: 7px 10px; } .topbar { gap: 12px; } }
-@media (max-width: 1060px) { .brand-name { display: none; } .topnav a { padding: 7px 8px; } }
+@media (max-width: 1060px) and (min-width: 761px) { .topbar .brand-name { display: none; } }
+@media (max-width: 1060px) { .topnav a { padding: 7px 8px; } }
 @media (max-width: 760px) {
   .gsearch { flex: 1 1 auto; min-width: 0; }
   .gsearch-list { position: fixed; top: calc(52px + env(safe-area-inset-top)); left: 8px; right: 8px; width: auto; max-height: 65vh; }
