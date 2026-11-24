@@ -170,6 +170,9 @@ const remote = {
   async mailAnhang(emailId, name, nr) {
     return googleCall('anhang-link', { email_id: emailId, name, nr });
   },
+  async terminAntwort(t) {
+    return googleCall('termin-antwort', t);
+  },
   async terminAbsagen(t) {
     return googleCall('termin-absagen', t);
   },
@@ -266,7 +269,7 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v10';
+const KEY = 'crm-demo-v11';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
   'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten', 'verkauf'];
@@ -412,8 +415,14 @@ function demoVerkauf(r, before) {
 }
 
 let demoKonten = [
-  { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true, darf_termine: true },
-  { id: 2, address: 'team@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 0, termine: 0, darf_senden: false, darf_termine: false },
+  { id: 1, address: 'demo@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 2, termine: 5, darf_senden: true, darf_termine: true,
+    kalender_an: [], kalender: [
+      { id: 'demo@beispiel.de', name: 'demo@beispiel.de', farbe: '#9a9cff', rolle: 'owner', kollege: false },
+      { id: 'ben.muster@beispiel.de', name: 'Ben Muster', farbe: '#7fa7c9', rolle: 'reader', kollege: true },
+      { id: 'eva.probst@beispiel.de', name: 'Eva Probst', farbe: '#d98b4f', rolle: 'freeBusyReader', kollege: true },
+    ] },
+  { id: 2, address: 'team@beispiel.de', status: 'ok', fehler: null, letzter_lauf: now(), mails: 0, termine: 0, darf_senden: false, darf_termine: false,
+    kalender_an: [], kalender: [] },
 ];
 
 const demo = {
@@ -447,6 +456,27 @@ const demo = {
     }
     if (fn === 'meine_google_konten') return DEMO_GUEST ? [] : demoKonten.map(copy);
     if (fn === 'google_konto_trennen') demoKonten = demoKonten.filter((k) => k.id !== args.kid);
+    // Wie supabase/38_kalender_einladungen_abos.sql, der Abgleich bringt hier gleich zwei Beispieltermine
+    if (fn === 'kalender_abo') {
+      const k = demoKonten.find((x) => x.id === args.p_kid);
+      const c = k?.kalender.find((x) => x.id === args.p_kalender && x.kollege);
+      if (!c) throw new Error('Diesen Kalender gibt es nicht.');
+      const s = state();
+      k.kalender_an = args.p_an ? [...new Set([...k.kalender_an, c.id])] : k.kalender_an.filter((x) => x !== c.id);
+      s.events = s.events.filter((e) => e.calendar_id !== c.id);
+      if (args.p_an) {
+        [[1, 11, 'Kundentermin'], [2, 14, 'Teamrunde']].forEach(([tage, h, titel]) => {
+          const start = new Date(); start.setDate(start.getDate() + tage); start.setHours(h, 0, 0, 0);
+          s.seq += 1;
+          s.events.push({ id: s.seq, calendar_id: c.id, calendar_name: c.name, calendar_color: c.farbe, event_id: `abo${tage}`,
+            ical_uid: `abo${tage}${c.id}`, title: `${titel} (${c.name})`, start_at: start.toISOString(),
+            end_at: new Date(start.getTime() + 3600e3).toISOString(), all_day: false, location: null, meet_url: null, html_link: null,
+            organizer: c.id, attendees: [], description: null, status: 'confirmed', antwort: null });
+        });
+      }
+      persist();
+      return null;
+    }
     if (DEMO_GUEST && ['antworten_offen', 'mails_ohne_antwort'].includes(fn)) return [];
     if (fn === 'antworten_offen') return demoAntworten();
     if (fn === 'mails_ohne_antwort') return demoOhneAntwort(args.p_tage ?? 3);
@@ -506,6 +536,15 @@ const demo = {
   },
   async mailAnhang(emailId, name) {
     return { url: URL.createObjectURL(new Blob([`Beispiel für den Anhang ${name} im Demo-Modus.`], { type: 'text/plain' })) };
+  },
+  async terminAntwort(t) {
+    const s = state();
+    const e = s.events.find((x) => x.calendar_id === t.von && x.event_id === t.event_id);
+    if (!e || !e.antwort) throw new Error('Zu diesem Termin hat dich niemand eingeladen.');
+    e.antwort = t.antwort;
+    (e.details?.gaeste || []).forEach((g) => { if (g.email === t.von) g.status = t.antwort; });
+    persist();
+    return { ok: true, antwort: t.antwort };
   },
   async terminAbsagen(t) {
     const s = state();

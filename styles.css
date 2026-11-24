@@ -1375,3 +1375,25 @@ details.more[open] summary { margin-bottom: 12px; }
 /* Umbruch (Schreibregeln 16.11.2026): kein einzelnes Wort allein in der letzten Zeile, Überschriften gleichmäßig */
 p, li { text-wrap: pretty; }
 h1, h2, h3 { text-wrap: balance; }
+
+/* Einladungen (v73): unbeantwortet nur umrandet, abgelehnt durchgestrichen, wie in Google Kalender */
+.wk-ev.offen, .wk-ad.offen {
+  background: color-mix(in srgb, var(--cc) 12%, var(--surface)); color: var(--text) !important;
+  box-shadow: inset 0 0 0 1.5px var(--cc), 0 0 0 1px var(--surface);
+}
+.wk-ev.abgelehnt, .wk-ad.abgelehnt { opacity: 0.45; }
+.wk-ev.abgelehnt .wk-ev-title, .wk-ad.abgelehnt, .ev.abgelehnt .ev-title { text-decoration: line-through; }
+.ev.abgelehnt { opacity: 0.6; }
+.einladung-badge { margin-left: 4px; vertical-align: 1px; border: 1px solid var(--cc); background: transparent; color: var(--text); }
+.gev-rsvp { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 2px 0 6px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.gev-rsvp .seg-btn.rsvp-accepted.on { background: var(--ok); border-color: var(--ok); color: var(--accent-ink); }
+.gev-rsvp .seg-btn.rsvp-declined.on { background: var(--danger); border-color: var(--danger); color: var(--accent-ink); }
+
+/* Weitere Kalender je Postfach (v73) */
+.weitere-kal { margin: 6px 0 12px; padding: 8px 12px; border: 1px dashed var(--border-strong); border-radius: 10px; }
+.weitere-kal summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.weitere-kal[open] summary { margin-bottom: 8px; color: var(--text); }
+.weitere-kal .field { margin-top: 10px; }
+.abo-row { display: flex; gap: 8px; }
+.abo-row input { flex: 1; min-width: 0; }

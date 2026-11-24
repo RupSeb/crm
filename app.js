@@ -596,7 +596,7 @@ const TAB_OF = {
 // Meetings ohne die (langen) Zusammenfassungen laden, die kommen erst beim Öffnen.
 const MEETING_COLUMNS = 'id,title,held_at,duration_min,project_id,extra_names,fireflies_id,created_at,updated_at';
 // Termine ohne Beschreibung, die kommt erst beim Öffnen
-const EVENT_COLUMNS = 'id,calendar_id,calendar_name,calendar_color,ical_uid,title,start_at,end_at,all_day,location,meet_url,html_link,attendees,organizer';
+const EVENT_COLUMNS = 'id,calendar_id,calendar_name,calendar_color,ical_uid,title,start_at,end_at,all_day,location,meet_url,html_link,attendees,organizer,antwort';
 
 function Main({ session }) {
   const route = useRoute();
@@ -1558,7 +1558,7 @@ function GoogleAccounts() {
         ${k.darf_senden && html`<button type="button" class="btn ghost xs" disabled=${busy} onClick=${() => incognito(k.address, false, 'lesen', k.id)}>Nur noch lesen</button>`}
         <button type="button" class="btn ghost xs danger" onClick=${() => disconnect(k)}>Trennen</button>
       </div>
-    </div>${link?.kid === k.id && linkBlock}</div>`)}
+    </div>${link?.kid === k.id && linkBlock}<${WeitereKalender} konto=${k} onChange=${load} /></div>`)}
     <p class="muted small">Verbinde dein Google-Konto, dann holt das CRM alle paar Minuten deine Mails (ohne Newsletter) und Termine, auch wenn kein Rechner läuft. Nur du siehst sie.</p>
     <label class="field"><span>Google-Adresse</span>
       <input type="email" value=${address} onInput=${(e) => setAddress(e.target.value)} /></label>
@@ -1569,6 +1569,57 @@ function GoogleAccounts() {
     </div>
     ${link && !link.kid && linkBlock}
   </div>`;
+}
+
+// Weitere Kalender je Postfach (38_kalender_einladungen_abos.sql). Kalender von Kolleginnen und Kollegen derselben Domain
+// holt der Abgleich nur, wenn sie hier eingeschaltet sind, sonst stünden schnell Hunderte fremder Termine im CRM.
+// Kalender anderer Firmen kommen ohne Einschalten mit. Abonniert wird in Google, weil nur Google beim Besitzer um
+// Zugriff bitten kann. Das CRM öffnet Google Kalender dafür im richtigen Konto mit der Adresse.
+function WeitereKalender({ konto, onChange }) {
+  const { actions } = useApp();
+  const [adresse, setAdresse] = useState('');
+  const [busy, setBusy] = useState(null);
+  const liste = (konto.kalender || []).filter((c) => c.kollege).sort((a, b) => String(a.name).localeCompare(String(b.name), 'de'));
+  const an = new Set((konto.kalender_an || []).map((x) => String(x).toLowerCase()));
+  const ist = (c) => an.has(String(c.id).toLowerCase());
+  async function umschalten(c) {
+    const ein = !ist(c);
+    if (!ein && !confirm(`„${c.name}“ ausschalten? Die Termine daraus verschwinden aus dem CRM, in Google bleibt alles.`)) return;
+    setBusy(c.id);
+    try {
+      await db.rpc('kalender_abo', { p_kid: konto.id, p_kalender: c.id, p_an: ein });
+      await onChange();
+      await actions.load();
+      if (ein) {
+        actions.notify(`„${c.name}“ ist eingeschaltet. Die Termine kommen in den nächsten Minuten.`);
+        db.googleSync().then(() => actions.load()).catch(() => {});
+      } else actions.notify(`„${c.name}“ ist ausgeschaltet.`);
+    } catch (e) { actions.fail(e); } finally { setBusy(null); }
+  }
+  const abonnieren = () => {
+    const url = `https://calendar.google.com/calendar/render?cid=${encodeURIComponent(adresse.trim())}&authuser=${encodeURIComponent(konto.address)}`;
+    window.open(url, '_blank', 'noopener');
+  };
+  return html`<details class="weitere-kal">
+    <summary>Weitere Kalender${liste.length ? ` (${liste.filter(ist).length} von ${liste.length} eingeschaltet)` : ''}</summary>
+    ${konto.kalender == null ? html`<p class="muted small">Die Liste kommt mit dem nächsten Abgleich, spätestens in ein paar Minuten.</p>`
+    : liste.length === 0 ? html`<p class="muted small">In diesem Google-Konto ist kein Kalender von Kolleginnen oder Kollegen abonniert.</p>`
+      : html`<div class="chips">${liste.map((c) => html`<button type="button" key=${c.id}
+          class=${'chip toggle cal' + (ist(c) ? ' on' : '')} style=${`--cc:${c.farbe || '#a9b4ae'}`}
+          disabled=${busy === c.id || c.rolle === 'freeBusyReader'} onClick=${() => umschalten(c)}
+          title=${c.rolle === 'freeBusyReader' ? 'Nur frei oder belegt freigegeben, Termine lassen sich nicht abgleichen' : c.id}>
+          <span class="dot"></span>${c.name}${c.rolle === 'freeBusyReader' ? ' (nur frei/belegt)' : ''}</button>`)}</div>
+        <p class="muted small">Eingeschaltete Kalender gleicht das CRM ab wie deine eigenen. Ausschalten nimmt ihre Termine wieder heraus.</p>`}
+    <label class="field"><span>Kalender abonnieren</span>
+      <div class="abo-row">
+        <input type="email" placeholder="adresse@firma.de" value=${adresse} onInput=${(e) => setAdresse(e.target.value)}
+          onKeyDown=${(e) => { if (e.key === 'Enter' && adresse.includes('@')) { e.preventDefault(); abonnieren(); } }} />
+        <button type="button" class="btn sm" disabled=${!adresse.includes('@')} onClick=${abonnieren}>In Google öffnen</button>
+      </div></label>
+    <p class="muted small">Google Kalender öffnet sich im Konto ${konto.address} und fügt den Kalender hinzu. Darfst du ihn noch nicht sehen,
+      bittet Google den Besitzer um Zugriff. Danach erscheint er hier beim nächsten Abgleich. Kalender von Kolleginnen und Kollegen
+      schaltest du dann oben ein, Kalender anderer Firmen kommen von selbst.</p>
+  </details>`;
 }
 
 function Avatar({ name, size, square }) {
@@ -3796,17 +3847,20 @@ function EventRow({ ev }) {
   const cals = idx.calendarsOf.get(ev.id) || [ev.calendar_name];
   const who = guests.slice(0, 3).join(', ') + (guests.length > 3 ? ` +${guests.length - 3}` : '');
   const open = () => go('#/termin/' + ev.id);
-  return html`<div class=${'ev' + (isPast(ev) ? ' past' : '')} role="link" tabindex="0"
+  return html`<div class=${'ev' + (isPast(ev) ? ' past' : '') + einladungCls(ev)} role="link" tabindex="0"
       style=${`--cc:${ev.calendar_color || '#a9b4ae'}`} onClick=${open} onKeyDown=${(e) => { if (e.key === 'Enter') open(); }}>
     <div class="ev-time">${timeRange(ev)}</div>
     <div class="ev-main">
-      <div class="ev-title">${ev.title}</div>
+      <div class="ev-title">${ev.title}${ev.antwort === 'needsAction' && !isPast(ev) && html` <span class="badge einladung-badge">Einladung offen</span>`}</div>
       <div class="ev-meta"><span class="dot"></span>${cals.join(', ')}${who ? ' · ' + who : ''}</div>
     </div>
     ${ev.meet_url && !isPast(ev) && html`<a class="btn xs ev-join" href=${ev.meet_url} target="_blank" rel="noopener"
       onClick=${(e) => e.stopPropagation()}><${Icon} n="video" />Beitreten</a>`}
   </div>`;
 }
+
+// Einladungen wie in Google Kalender: unbeantwortet nur umrandet, abgelehnt durchgestrichen (events.antwort)
+const einladungCls = (e) => (e.antwort === 'needsAction' ? ' offen' : e.antwort === 'declined' ? ' abgelehnt' : '');
 
 function EventDays({ list }) {
   const days = new Map();
@@ -3915,7 +3969,7 @@ function WeekView({ list, start, span }) {
         ${allDay.length > 0 && html`<div class="wk-row wk-allday">
           <div class="wk-gutter wk-adlabel">ganztägig</div>
           ${days.map((d) => html`<div key=${d} class="wk-adcell">
-            ${allDay.filter((e) => allDayCovers(e, d)).map((e) => html`<button key=${e.id} class="wk-ad"
+            ${allDay.filter((e) => allDayCovers(e, d)).map((e) => html`<button key=${e.id} class=${'wk-ad' + einladungCls(e)}
               style=${`--cc:${e.calendar_color || '#a9b4ae'};color:${inkFor(e.calendar_color)}`} title=${e.title}
               onClick=${() => open(e)}>${e.title}</button>`)}
           </div>`)}
@@ -3928,7 +3982,7 @@ function WeekView({ list, start, span }) {
         ${days.map((d) => html`<div key=${d} class=${'wk-col' + (d === today ? ' today' : '')} onClick=${(ev) => newAt(ev, d)}>
           ${layoutDay(timed.filter((e) => ts(e.start_at) < Date.parse(addDays(d, 1) + 'T00:00:00')
             && (ts(e.end_at) || ts(e.start_at) + 1) > Date.parse(d + 'T00:00:00')), d).map((it) => html`<div key=${it.e.id}
-              class=${'wk-ev' + (isPast(it.e) ? ' past' : '') + (it.height < 34 ? ' short' : '')} role="link" tabindex="0"
+              class=${'wk-ev' + (isPast(it.e) ? ' past' : '') + (it.height < 34 ? ' short' : '') + einladungCls(it.e)} role="link" tabindex="0"
               title=${`${timeRange(it.e)} ${it.e.title}`}
               style=${`top:${it.top}px;height:${it.height - 2}px;left:calc(${it.col} * 100% / ${it.n});width:calc(100% / ${it.n} - 3px);--cc:${it.e.calendar_color || '#a9b4ae'};color:${inkFor(it.e.calendar_color)}`}
               onClick=${() => open(it.e)} onKeyDown=${(ev) => { if (ev.key === 'Enter') open(it.e); }}>
@@ -4288,6 +4342,22 @@ function EventSheet({ event: ev }) {
     } catch (e) { actions.fail(e); setBusy(false); }
   }
 
+  // Einladung beantworten (38_kalender_einladungen_abos.sql): nur im eigenen Kalender mit Termin-Recht und bei kommenden
+  // Terminen, zu denen jemand anderes eingeladen hat. Google schickt die Antwort an den Organisator.
+  const meineAntwort = full?.antwort ?? ev.antwort;
+  const kannAntworten = full?.event_id && meineAntwort && !isPast(ev) && konten.some((k) => k.address === ev.calendar_id && k.darf_termine);
+  async function einladungBeantworten(a) {
+    if (a === meineAntwort || busy) return;
+    setBusy(true);
+    try {
+      await db.terminAntwort({ von: ev.calendar_id, event_id: full.event_id, antwort: a });
+      const neu = await db.get('events', ev.id).catch(() => null);
+      if (neu) setFull(neu);
+      await actions.load();
+      actions.notify(`${{ accepted: 'Zugesagt', tentative: 'Mit Vielleicht geantwortet', declined: 'Abgesagt' }[a]}, Google gibt dem Organisator Bescheid.`);
+    } catch (e) { actions.fail(e); } finally { setBusy(false); }
+  }
+
   const d = full?.details || {};
   const copy = (text, msg) => navigator.clipboard.writeText(text).then(() => actions.notify(msg)).catch(() => actions.notify(text));
   const meet = webLink(ev.meet_url);
@@ -4319,6 +4389,14 @@ function EventSheet({ event: ev }) {
           ${d.serie && html`<p class="gev-sub">Wiederkehrender Termin</p>`}
         </div>
       </div>
+      ${kannAntworten && html`<div class="gev-rsvp">
+        <span class="gev-strong">Teilnehmen?</span>
+        <div class="seg" role="group" aria-label="Antwort auf die Einladung">${[['accepted', 'Ja'], ['tentative', 'Vielleicht'], ['declined', 'Nein']].map(([k, l]) => html`<button
+          type="button" key=${k} class=${'seg-btn rsvp-' + k + (meineAntwort === k ? ' on' : '')} aria-pressed=${meineAntwort === k}
+          disabled=${busy} onClick=${() => einladungBeantworten(k)}>${l}</button>`)}</div>
+        ${meineAntwort === 'needsAction' && html`<span class="muted small">Noch nicht beantwortet</span>`}
+        ${d.serie && html`<span class="muted small">Gilt nur für diesen Termin der Serie.</span>`}
+      </div>`}
 
       ${meet && html`<${GevRow} icon="video" side=${html`<button type="button" class="icon-btn sm" title="Link kopieren" aria-label="Link kopieren"
           onClick=${() => copy(meet, 'Link kopiert.')}><${Icon} n="copy" /></button>`}>

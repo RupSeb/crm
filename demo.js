@@ -223,6 +223,17 @@ export function demoSeed() {
   event('Messeplanung', 'Kooperationen', '#6fb58f', 0, 10, 60, [david]);
   event('Steuerunterlagen sortieren', 'Privat', '#e07a7a', -1, 16, 90, []);
   event('Wochenrunde Vertrieb', 'Vertrieb', '#7fa7c9', 4, 15, 50, [ben]);
+  // Einladungen im eigenen Kalender (38_kalender_einladungen_abos.sql): eine offen, eine abgelehnt
+  const einladung = (titel, tage, h, antwort) => event(titel, 'Demo', '#9a9cff', tage, h, 45, [david], {
+    calendar_id: 'demo@beispiel.de', organizer: david.emails[0], antwort,
+    attendees: [david.emails[0], 'demo@beispiel.de'],
+    details: { gaeste: [
+      { email: david.emails[0], name: david.name, status: 'accepted', organisator: true },
+      { email: 'demo@beispiel.de', name: null, status: antwort },
+    ], erinnerungen: [10] },
+  });
+  einladung('Workshop Partnerprogramm', 1, 14, 'needsAction');
+  einladung('Lunch & Learn', 2, 12, 'declined');
   event('Messe Musterstadt', 'Kooperationen', '#6fb58f', 3, 0, 0, [], {
     all_day: true, start_at: inDays(3) + 'T00:00:00Z', end_at: inDays(5) + 'T00:00:00Z',
   });
