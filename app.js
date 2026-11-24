@@ -2128,7 +2128,7 @@ function Overview() {
     // Was heute fällig oder überfällig ist, steht nie hinter „Alle anzeigen“, es kommt ja nicht mehr doppelt
     // bei den Wiedervorlagen vor.
     const limit = Math.max(8, list.filter((c) => prioRank(c) < 2).length);
-    const dueNow = (c) => whenOf(c) <= todayStr();
+    const dueNow = (c) => (idx.nextAkt(c.id)?.faellig || '9') <= todayStr();
     const collapsed = list.filter((c, i) => i < limit || dueNow(c));
     const shown = showAll[p.id] ? list : collapsed;
     return html`<div class="todo-group" key=${p.id} style=${`--pc:${p.color}`}>
