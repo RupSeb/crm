@@ -269,7 +269,7 @@ const remote = {
 // ---------------------------------------------------------------------------
 // Demo
 // ---------------------------------------------------------------------------
-const KEY = 'crm-demo-v11';
+const KEY = 'crm-demo-v12';
 const TABLES = ['projects', 'stages', 'organizations', 'persons', 'cards', 'notes', 'meetings', 'meeting_persons',
   'emails', 'email_persons', 'events', 'event_persons', 'card_shares', 'project_shares', 'card_events', 'card_seen',
   'nachfass_aus', 'nutzer_gesehen', 'nutzer_einstellungen', 'aktivitaeten', 'verkauf'];
@@ -456,6 +456,8 @@ const demo = {
     }
     if (fn === 'meine_google_konten') return DEMO_GUEST ? [] : demoKonten.map(copy);
     if (fn === 'google_konto_trennen') demoKonten = demoKonten.filter((k) => k.id !== args.kid);
+    // Wie meine_mail_spuren() aus 39_mail_spur.sql, die Demo hält die Zahlen gleich fertig vor
+    if (fn === 'meine_mail_spuren') return DEMO_GUEST ? [] : (state().mail_spuren || []).map(copy);
     // Wie supabase/38_kalender_einladungen_abos.sql, der Abgleich bringt hier gleich zwei Beispieltermine
     if (fn === 'kalender_abo') {
       const k = demoKonten.find((x) => x.id === args.p_kid);
@@ -514,6 +516,11 @@ const demo = {
       from_email: mail.von, from_name: 'Alex Demo', to_emails: an, cc_emails: liste(mail.cc), subject: mail.betreff, sent_at: now(),
       body: mail.text, attachments: (mail.anhaenge || []).map((a) => a.name), in_inbox: false, created_at: now(),
     };
+    if (mail.verfolgen) {
+      m.gmail_id = `demo-gesendet-${s.seq}`;
+      s.mail_spuren = [...(s.mail_spuren || []), { id: s.seq, mailbox: mail.von, gmail_id: m.gmail_id, thread_id: null, betreff: mail.betreff,
+        empfaenger: an, gesendet_at: now(), geoeffnet: 0, zuerst_geoeffnet: null, zuletzt_geoeffnet: null, klicks: 0, klick_liste: [] }];
+    }
     s.emails.push(m);
     s.persons.filter((p) => (p.emails || []).some((e) => an.includes(e.toLowerCase()))).forEach((p) => {
       s.seq += 1;

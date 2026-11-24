@@ -1397,3 +1397,15 @@ h1, h2, h3 { text-wrap: balance; }
 .weitere-kal .field { margin-top: 10px; }
 .abo-row { display: flex; gap: 8px; }
 .abo-row input { flex: 1; min-width: 0; }
+
+/* Mail-Verfolgung (v74) */
+.mail-spur {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
+  border: 1px solid var(--border-strong); color: var(--muted); font-size: 11px; line-height: 17px;
+}
+.mail-spur.offen { border-color: color-mix(in srgb, var(--gold) 55%, transparent); color: var(--text); }
+.mail-spur.klick { background: color-mix(in srgb, var(--ok) 22%, transparent); border-color: transparent; color: var(--text); font-weight: 600; }
+.spur-info { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border); font-size: 13px; }
+.spur-klicks { margin: 0; padding-left: 18px; }
+.spur-klicks li { overflow-wrap: anywhere; }

@@ -8,7 +8,7 @@ export function demoSeed() {
   const s = {
     projects: [], stages: [], organizations: [], persons: [], cards: [], notes: [],
     meetings: [], meeting_persons: [], emails: [], email_persons: [], events: [], event_persons: [], card_shares: [],
-    project_shares: [], card_events: [], card_seen: [], aktivitaeten: [], verkauf: [],
+    project_shares: [], card_events: [], card_seen: [], aktivitaeten: [], verkauf: [], mail_spuren: [],
   };
 
   const projects = [['Vertrieb', '#7fa7c9'], ['Objekte', '#d98b4f'], ['Allgemein', '#a9b4ae'], ['Kooperationen', '#b08fd6']];
@@ -146,7 +146,12 @@ export function demoSeed() {
   // Follow-up-Status: Clara hat auf die wartende Aufgabe geantwortet, David und eine Anfrage ohne Kontakt noch nicht
   mail(clara, 'out', 'Mietvertrag Entwurf', 6, 'Hallo Frau Probe,\n\nanbei der Entwurf. Passt das so?\n\nBeste Grüße\nAlex Demo');
   mail(clara, 'in', 'Re: Mietvertrag Entwurf', 1, 'Hallo Alex,\n\nzwei kleine Änderungen in Paragraf 3, sonst passt es.\n\nViele Grüße\nClara Probe');
-  mail(david, 'out', 'Entwurf Rahmenvertrag', 5, 'Hallo David,\n\nwie besprochen der Entwurf. Gib gern bis Freitag Bescheid.\n\nBeste Grüße\nAlex');
+  mail(david, 'out', 'Entwurf Rahmenvertrag', 5, 'Hallo David,\n\nwie besprochen der Entwurf. Gib gern bis Freitag Bescheid.\n\nBeste Grüße\nAlex',
+    { gmail_id: 'demo-verfolgt-1' });
+  // Mail-Verfolgung (39_mail_spur.sql): diese Mail wurde verfolgt, zweimal geöffnet, ein Klick
+  s.mail_spuren.push({ id: id(), mailbox: 'demo@beispiel.de', gmail_id: 'demo-verfolgt-1', thread_id: null, betreff: 'Entwurf Rahmenvertrag',
+    empfaenger: [david.emails[0]], gesendet_at: ago(5, 2), geoeffnet: 2, zuerst_geoeffnet: ago(5, 1), zuletzt_geoeffnet: ago(2),
+    klicks: 1, klick_liste: [{ link: 'https://example.com/rahmenvertrag.pdf', at: ago(2) }] });
   s.emails.push({
     id: id(), message_id: `<demo-${seq}@beispiel.de>`, thread_id: null, mailbox: 'demo@beispiel.de', gmail_id: null, direction: 'out',
     from_email: 'demo@beispiel.de', from_name: 'Alex Demo', to_emails: ['info@example.com'], cc_emails: [], subject: 'Anfrage Unterlagen',

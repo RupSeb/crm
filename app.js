@@ -4748,6 +4748,36 @@ function mailDate(iso) {
 // Ab hier beginnt meist der zitierte Verlauf einer Antwort
 const QUOTE_START = /^(Am .{4,160}schrieb.{0,120}:|On .{4,160}wrote:|-{2,}\s*(Original Message|Ursprüngliche Nachricht)|Von: .+|From: .+|>.*)\s*$/m;
 
+// Mail-Verfolgung (39_mail_spur.sql): eigene verfolgte Mails, einmal geladen und geteilt. Nach einer Minute holt die
+// nächste Anzeige frische Zahlen. Zugeordnet wird über Postfach und Gmail-ID.
+let mailSpuren = null;
+let spurenLaden = null;
+let spurenZeit = 0;
+const spurHoerer = new Set();
+function ladeSpuren(neu = false) {
+  if (!spurenLaden || neu || Date.now() - spurenZeit > 60e3) {
+    spurenZeit = Date.now();
+    spurenLaden = db.rpc('meine_mail_spuren', { p_tage: 180 }).then((l) => {
+      mailSpuren = new Map((l || []).filter((x) => x.gmail_id).map((x) => [`${x.mailbox}|${x.gmail_id}`, x]));
+      spurHoerer.forEach((f) => f(mailSpuren));
+      return mailSpuren;
+    }).catch(() => { spurenLaden = null; return new Map(); });
+  }
+  return spurenLaden;
+}
+function useMailSpur(m) {
+  const [map, setMap] = useState(mailSpuren);
+  const out = m.direction === 'out';
+  useEffect(() => {
+    if (!out) return undefined;
+    spurHoerer.add(setMap);
+    ladeSpuren();
+    return () => { spurHoerer.delete(setMap); };
+  }, [out]);
+  return out && m.gmail_id ? map?.get(`${m.mailbox}|${m.gmail_id}`) || null : null;
+}
+const spurKurz = (s) => (s.klicks ? `${s.klicks} ${s.klicks === 1 ? 'Klick' : 'Klicks'}` : s.geoeffnet ? 'geöffnet' : 'noch nicht geöffnet');
+
 function EmailsPanel({ personIds }) {
   const { actions, idx } = useApp();
   const [mails, setMails] = useState(null);
@@ -4936,6 +4966,7 @@ function MailboxPage() {
 // isNew: seit dem letzten Blick ins Postfach angekommen. offen: in der Ansicht „Ohne Antwort“, mit onAus fürs Ausblenden.
 function EmailItem({ mail: m, people = [], showBox = false, isNew = false, offen = null }) {
   const { actions } = useApp();
+  const spur = useMailSpur(m);
   const wartet = offen ? Math.max(1, Math.floor((Date.now() - ts(m.sent_at)) / 864e5)) : 0;
   const ausBtn = (e) => { e.stopPropagation(); offen.onAus(); };
   const kannSenden = useKannSenden();
@@ -4992,6 +5023,8 @@ function EmailItem({ mail: m, people = [], showBox = false, isNew = false, offen
       <span class="mail-line">
         ${offen && html`<span class="mail-wait" title="So lange wartest du schon auf eine Antwort">seit ${wartet} ${wartet === 1 ? 'Tag' : 'Tagen'}</span>`}
         ${showBox && html`<span class="mail-box">${m.mailbox.split('@')[1] || m.mailbox}</span>`}
+        ${spur && html`<span class=${'mail-spur' + (spur.klicks ? ' klick' : spur.geoeffnet ? ' offen' : '')}
+          title="Verfolgt: Öffnen und Klicks">${spurKurz(spur)}</span>`}
         <span class="mail-subject">${m.subject || '(ohne Betreff)'}</span>
         ${snippet && html`<span class="mail-snippet"> – ${snippet}</span>`}
       </span>
@@ -5015,6 +5048,14 @@ function EmailItem({ mail: m, people = [], showBox = false, isNew = false, offen
         <div class="mail-text">${main || '(kein Text)'}</div>
         ${quote && html`<button class="btn link sm" onClick=${() => setShowQuote(!showQuote)}>${showQuote ? 'Verlauf ausblenden' : 'Zitierten Verlauf anzeigen'}</button>`}
         ${quote && showQuote && html`<div class="mail-text quote">${quote}</div>`}`}
+      ${spur && html`<div class="spur-info">
+        <strong>Verfolgung</strong>
+        <span>${spur.geoeffnet ? `Geöffnet ${spur.geoeffnet === 1 ? 'einmal' : `${spur.geoeffnet}-mal`}, zuerst ${fullDate(spur.zuerst_geoeffnet)}${spur.geoeffnet > 1 ? `, zuletzt ${fullDate(spur.zuletzt_geoeffnet)}` : ''}` : 'Noch nicht geöffnet'}</span>
+        ${(spur.klick_liste || []).length > 0 ? html`<ul class="spur-klicks">${spur.klick_liste.slice(0, 10).map((k, i) => html`<li key=${i}>
+          <span class="muted">${fullDate(k.at)}</span> <span class="ell">${String(k.link || '').replace(/^https?:\/\//, '')}</span></li>`)}</ul>`
+    : html`<span>Noch kein Klick auf einen Link</span>`}
+        <span class="muted small">„Geöffnet“ ist ungenau, weil manche Mailprogramme Bilder vorab laden und andere gar nicht. Klicks sind verlässlicher.</span>
+      </div>`}
       ${files.length > 0 && html`<div class="mail-attach">
         ${files.map((f, i) => html`<button type="button" key=${f + i} class="mail-file" disabled=${fileBusy === i} title=${`${f} öffnen`} onClick=${() => openFile(f, i)}>
           <${Icon} n="file" /><span>${fileBusy === i ? 'Öffnet …' : f}</span></button>`)}
@@ -5115,6 +5156,8 @@ function MailSheet({ query }) {
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);
   const [mitSignatur, setMitSignatur] = useState(true);
+  // Mail-Verfolgung (39_mail_spur.sql): je Mail einzeln, jedes Mal aus
+  const [verfolgen, setVerfolgen] = useState(false);
   const [mitVerlauf, setMitVerlauf] = useState(true);
   const [ladefehler, setLadefehler] = useState('');
   const [busy, setBusy] = useState(false);
@@ -5202,14 +5245,15 @@ function MailSheet({ query }) {
     try {
       const selbesPostfach = orig && orig.mailbox === von;
       await db.mailSend({
-        von, an, cc, bcc, betreff, text, signatur: mitSignatur,
+        von, an, cc, bcc, betreff, text, signatur: mitSignatur, verfolgen,
         anhaenge: await Promise.all(files.map(async (f) => ({ name: f.name, typ: f.type, daten: await alsBase64(f) }))),
         antwort_auf: selbesPostfach ? orig.gmail_id : null,
         bezug: orig && !selbesPostfach ? orig.message_id : null,
         zitat: orig && mitVerlauf ? orig.body || '' : '', zitat_kopf: orig && mitVerlauf ? zitatKopf : '',
       });
       ls.set('crm-mail-von', von);
-      actions.notify('Mail gesendet. Sie steht gleich im Postfach.');
+      if (verfolgen) ladeSpuren(true);
+      actions.notify(verfolgen ? 'Mail gesendet, Öffnen und Klicks werden verfolgt. Sie steht gleich im Postfach.' : 'Mail gesendet. Sie steht gleich im Postfach.');
       close();
     } catch (e) { actions.fail(e); setBusy(false); }
   }
@@ -5255,6 +5299,9 @@ function MailSheet({ query }) {
       ${aktiv?.signatur ? html`<label class="check-line"><input type="checkbox" checked=${mitSignatur} onChange=${(e) => setMitSignatur(e.target.checked)} /> Signatur anhängen</label>
         ${mitSignatur && html`<div class="mail-text quote mail-preview">${aktiv.signatur}</div>`}`
     : html`<p class="muted small">Für dieses Postfach ist in Gmail keine Signatur hinterlegt.</p>`}
+      <label class="check-line"><input type="checkbox" checked=${verfolgen} onChange=${(e) => setVerfolgen(e.target.checked)} /> Öffnen und Klicks verfolgen</label>
+      ${verfolgen && html`<p class="muted small">Die Mail bekommt ein unsichtbares Bild, und Links in deinem Text und in der Signatur laufen über das CRM.
+        Du siehst dann bei der Mail, ob und wann sie geöffnet und welcher Link geklickt wurde. Gespeichert werden nur Zeitpunkt und Link.</p>`}
       ${orig?.body && html`<label class="check-line"><input type="checkbox" checked=${mitVerlauf} onChange=${(e) => setMitVerlauf(e.target.checked)} /> Verlauf anhängen</label>
         ${mitVerlauf && html`<div class="mail-text quote mail-preview">${zitatKopf}${'\n'}${orig.body}</div>`}`}
     </form>`}
