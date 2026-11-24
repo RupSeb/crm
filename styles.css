@@ -1,9 +1,12 @@
-/* Dunkles Design: Waldgrün als Grund, Gold als Akzent,
-   Geist als Schrift, Instrument Serif für Seitentitel, Geist Mono für Beschriftungen. */
-@font-face { font-family: "Geist"; src: url("vendor/fonts/Geist-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
-@font-face { font-family: "Geist Mono"; src: url("vendor/fonts/GeistMono-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
-@font-face { font-family: "Instrument Serif"; src: url("vendor/fonts/instrument-serif-latin-400-normal.woff2") format("woff2"); font-style: normal; font-display: swap; }
-@font-face { font-family: "Instrument Serif"; src: url("vendor/fonts/instrument-serif-latin-400-italic.woff2") format("woff2"); font-style: italic; font-display: swap; }
+/* Dunkles Design: Waldgrün als Grund, Gold als Akzent.
+   Schrift seit v76 (24.11.2026, Sebastians Wahl „Variante B“) überall Jost, frei unter der SIL Open Font License 1.1
+   (vendor/fonts/Jost-OFL-Lizenz.txt), wie im beQ-CRM: Titel fett, Beschriftungen Medium, Text Regular.
+   Jost ist bei gleicher Größe kleiner als die frühere Geist (x-Höhe 0,46 statt 0,53). font-size-adjust gleicht das aus,
+   damit Größen und Breiten wie vorher bleiben. Die Variablen --font-serif und --font-mono bleiben als Namen bestehen. */
+@font-face { font-family: "Jost"; src: url("vendor/fonts/Jost-Regular.ttf") format("truetype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Jost"; src: url("vendor/fonts/Jost-Medium.ttf") format("truetype"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "Jost"; src: url("vendor/fonts/Jost-SemiBold.ttf") format("truetype"); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "Jost"; src: url("vendor/fonts/Jost-Bold.ttf") format("truetype"); font-weight: 700; font-style: normal; font-display: swap; }
 
 :root {
   --forest: #354840;
@@ -30,9 +33,9 @@
   --mail-open: color-mix(in srgb, #ffffff 9%, var(--surface));
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.5);
-  --font: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-serif: "Instrument Serif", Georgia, "Times New Roman", serif;
-  --font-mono: "Geist Mono", ui-monospace, Consolas, monospace;
+  --font: "Jost", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Jost", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Jost", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color-scheme: dark;
 }
 
@@ -141,7 +144,7 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px; letter-spacing: -0.01em; color: var(--text); text-decoration: none; }
 .brand-mark { flex: none; display: block; height: 26px; width: auto; }
-/* „CRM“ neben dem Gehirn: Großbuchstaben in Geist Mono wie die Beschriftungen bei Stratvell */
+/* „CRM“ neben dem Gehirn: Großbuchstaben mit Abstand wie die übrigen Beschriftungen */
 .brand-name { font: 600 13px var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold-l); }
 .topnav { display: flex; gap: 4px; }
 .topnav a { padding: 7px 14px; border-radius: 999px; color: var(--muted); text-decoration: none; font-weight: 500; }
@@ -905,8 +908,8 @@ h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; }
 .scan-preview { display: block; max-width: 100%; max-height: 200px; margin: 0 auto; border-radius: 10px; object-fit: contain; }
 .scan-hint { margin-top: -10px; }
 .scan-text { white-space: pre-wrap; font: 12.5px/1.5 var(--font-mono); color: var(--muted); margin: 8px 0 0; }
-.page-head h1 { margin: 0; font: 400 34px/1.1 var(--font-serif); letter-spacing: -0.01em; }
-.detail-title h1 { font-family: var(--font-serif); font-weight: 400; font-size: 32px !important; letter-spacing: -0.01em; }
+.page-head h1 { margin: 0; font: 600 30px/1.1 var(--font-serif); letter-spacing: -0.01em; }
+.detail-title h1 { font-family: var(--font-serif); font-weight: 600; font-size: 28px !important; letter-spacing: -0.01em; }
 .page-action { margin-left: auto; }
 .list { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .list > .btn.full { border-radius: 0; border: 0; border-top: 1px solid var(--border); }
@@ -1136,7 +1139,7 @@ details.more[open] summary { margin-bottom: 12px; }
 }
 .login-card .brand { margin-bottom: 14px; font-size: 18px; }
 .login-card p { margin: 0; }
-.login-title { margin: 4px 0 0; font: 400 30px/1.1 var(--font-serif); }
+.login-title { margin: 4px 0 0; font: 600 28px/1.1 var(--font-serif); }
 .mfa-qr { display: block; width: 190px; height: 190px; margin: 4px auto; padding: 10px; background: #fff; border-radius: 12px; }
 .mfa-secret { display: block; font: 500 14px var(--font-mono); letter-spacing: 0.08em; overflow-wrap: anywhere; user-select: all; }
 .mfa-key { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 10px; }
@@ -1249,7 +1252,7 @@ details.more[open] summary { margin-bottom: 12px; }
   background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
 }
 .kpi-label { display: inline-flex; align-items: center; gap: 6px; font: 500 11px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
-.kpi-num { font: 400 30px/1.1 var(--font-serif); letter-spacing: -0.01em; font-variant-numeric: tabular-nums; color: var(--text); overflow-wrap: anywhere; }
+.kpi-num { font: 600 26px/1.1 var(--font-serif); letter-spacing: -0.01em; font-variant-numeric: tabular-nums; color: var(--text); overflow-wrap: anywhere; }
 .kpi-sub { font-size: 12.5px; color: var(--muted); }
 .kpi-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); }
 .kpi-dot.gewonnen { background: var(--ok); }
@@ -1448,4 +1451,16 @@ h1, h2, h3 { text-wrap: balance; }
   .ev-time span { display: block; }
   .ev-time .ev-bis { font-size: 11px; opacity: 0.75; }
   .ev-time .ev-strich { display: none; }
+}
+
+/* Jost (v76): gleiche sichtbare Größe wie vorher und Ziffern gleicher Breite, damit Uhrzeiten und Beträge untereinander stehen */
+html { font-size-adjust: 0.5; }
+body { font-variant-numeric: tabular-nums; }
+/* Datum neben „Übersicht“ am Handy in einer Zeile, sonst stand „November“ allein */
+.page-head > .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.page-head .datum-kurz { display: none; }
+@media (max-width: 760px) {
+  .page-head h1 { font-size: 26px; }
+  .page-head .datum-lang { display: none; }
+  .page-head .datum-kurz { display: inline; }
 }

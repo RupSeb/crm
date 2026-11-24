@@ -2299,7 +2299,7 @@ function Overview() {
     ${list.map(slot)}${pd && html`<div class="tile-drop-end">${list.length ? '' : 'Hierher ziehen'}</div>`}</div>`;
 
   return html`<div class="page overview">
-    <div class="page-head"><h1>Übersicht</h1><span class="muted">${today}</span>
+    <div class="page-head"><h1>Übersicht</h1><span class="muted"><span class="datum-lang">${today}</span><span class="datum-kurz">${new Date().toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' })}</span></span>
       <div class="page-action">${arrange ? html`
         ${lay.eigen && html`<button type="button" class="btn sm ghost" onClick=${() => save(null)} title="Kacheln wieder wie am Anfang anordnen">Standard</button>`}
         <button type="button" class="btn sm primary" onClick=${() => setArrange(false)}>Fertig</button>`

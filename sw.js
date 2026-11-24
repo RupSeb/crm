@@ -3,13 +3,12 @@
 // ankommen. Datenbank-Anfragen (andere Domain) laufen nie über den Cache.
 // „no-cache“: beim Server nachfragen statt bis zu 10 Minuten den Browser-Zwischenspeicher
 // von GitHub Pages zu nehmen. Unveränderte Dateien kosten dabei nur eine kurze Rückfrage.
-const CACHE = 'crm-v75';
+const CACHE = 'crm-v76';
 const SHELL = [
   './', 'index.html', 'styles.css', 'app.js', 'db.js', 'demo.js', 'config.js',
   'manifest.webmanifest', 'vendor/preact-htm.js', 'vendor/purify.js', 'vendor/supabase.js',
   'icons/crm-192.png', 'icons/crm-512.png', 'icons/crm-apple-180.png', 'icons/logo.svg', 'icons/favicon.svg',
-  'vendor/fonts/Geist-Variable.woff2', 'vendor/fonts/GeistMono-Variable.woff2',
-  'vendor/fonts/instrument-serif-latin-400-normal.woff2', 'vendor/fonts/instrument-serif-latin-400-italic.woff2',
+  'vendor/fonts/Jost-Regular.ttf', 'vendor/fonts/Jost-Medium.ttf', 'vendor/fonts/Jost-SemiBold.ttf', 'vendor/fonts/Jost-Bold.ttf',
 ];
 
 self.addEventListener('install', (e) => {

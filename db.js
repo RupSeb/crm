@@ -21,14 +21,26 @@ function loadScript(src) {
   });
 }
 
+// Genau eine Verbindung je Seite. Vorher riefen Anmeldung und Ereignis-Abo client() gleichzeitig auf, dann lud die
+// Seite supabase.js zweimal und hatte zwei Anmelde-Instanzen, die dieselbe gespeicherte Anmeldung erneuerten (v76).
+let sbLaden = null;
 async function client() {
   if (sb) return sb;
-  await loadScript('vendor/supabase.js');
-  // detectSessionInUrl: Links aus Bestätigungs- und Passwort-Mails melden direkt an
-  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-  });
-  return sb;
+  if (!sbLaden) {
+    sbLaden = (async () => {
+      await loadScript('vendor/supabase.js');
+      // detectSessionInUrl: Links aus Bestätigungs- und Passwort-Mails melden direkt an
+      sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+      });
+      // Als App auf dem Home-Bildschirm um dauerhaften Speicher bitten, damit das Handy die Anmeldung nicht aufräumt
+      try {
+        if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) navigator.storage?.persist?.().catch(() => {});
+      } catch { /* egal */ }
+      return sb;
+    })().catch((e) => { sbLaden = null; throw e; });
+  }
+  return sbLaden;
 }
 
 function check({ data, error }) {
